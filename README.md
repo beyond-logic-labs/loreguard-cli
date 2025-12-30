@@ -1,5 +1,26 @@
 # Loreguard
 
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                                                                              │
+│  ██╗      ██████╗ ██████╗ ███████╗ ██████╗ ██╗   ██╗ █████╗ ██████╗ ██████╗  │
+│  ██║     ██╔═══██╗██╔══██╗██╔════╝██╔════╝ ██║   ██║██╔══██╗██╔══██╗██╔══██╗ │
+│  ██║     ██║   ██║██████╔╝█████╗  ██║  ███╗██║   ██║███████║██████╔╝██║  ██║ │
+│  ██║     ██║   ██║██╔══██╗██╔══╝  ██║   ██║██║   ██║██╔══██║██╔══██╗██║  ██║ │
+│  ███████╗╚██████╔╝██║  ██║███████╗╚██████╔╝╚██████╔╝██║  ██║██║  ██║██████╔╝ │
+│  ╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝  │
+│                                                                              │
+│  Local inference for your game NPCs                                          │
+│  loreguard.com                                                               │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+[![Build](https://github.com/beyond-logic-labs/loreguard-cli/actions/workflows/release.yml/badge.svg)](https://github.com/beyond-logic-labs/loreguard-cli/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![GitHub release](https://img.shields.io/github/v/release/beyond-logic-labs/loreguard-cli)](https://github.com/beyond-logic-labs/loreguard-cli/releases)
+
 Local inference client for Loreguard NPCs. Run AI-powered NPCs on your own hardware.
 
 ## Installation

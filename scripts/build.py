@@ -35,16 +35,13 @@ def main():
         "--name", "loreguard",
         "--clean",
         # Add hidden imports that PyInstaller might miss
-        "--hidden-import", "textual",
-        "--hidden-import", "textual.widgets",
-        "--hidden-import", "textual.screen",
         "--hidden-import", "rich",
         "--hidden-import", "httpx",
         "--hidden-import", "websockets",
-        "--hidden-import", "uvicorn",
-        "--hidden-import", "fastapi",
-        # Entry point
-        "src/tui/app.py",
+        "--hidden-import", "aiofiles",
+        "--hidden-import", "pydantic",
+        # Entry point - the interactive wizard
+        "src/wizard.py",
     ]
 
     # Add icon on Windows/macOS
