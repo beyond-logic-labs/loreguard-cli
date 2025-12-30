@@ -6,45 +6,46 @@
 [![GitHub release](https://img.shields.io/github/v/release/beyond-logic-labs/loreguard-cli)](https://github.com/beyond-logic-labs/loreguard-cli/releases)
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                                                                              │
-│  ██╗      ██████╗ ██████╗ ███████╗ ██████╗ ██╗   ██╗ █████╗ ██████╗ ██████╗  │
-│  ██║     ██╔═══██╗██╔══██╗██╔════╝██╔════╝ ██║   ██║██╔══██╗██╔══██╗██╔══██╗ │
-│  ██║     ██║   ██║██████╔╝█████╗  ██║  ███╗██║   ██║███████║██████╔╝██║  ██║ │
-│  ██║     ██║   ██║██╔══██╗██╔══╝  ██║   ██║██║   ██║██╔══██║██╔══██╗██║  ██║ │
-│  ███████╗╚██████╔╝██║  ██║███████╗╚██████╔╝╚██████╔╝██║  ██║██║  ██║██████╔╝ │
-│  ╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝  │
-│                                                                              │
-│  Local inference for your game NPCs                                          │
-│  loreguard.com                                                               │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                │
+│  ██╗      ██████╗ ██████╗ ███████╗   ██████╗ ██╗   ██╗ █████╗ ██████╗ ██████╗  │
+│  ██║     ██╔═══██╗██╔══██╗██╔════╝  ██╔════╝ ██║   ██║██╔══██╗██╔══██╗██╔══██╗ │
+│  ██║     ██║   ██║██████╔╝█████╗    ██║  ███╗██║   ██║███████║██████╔╝██║  ██║ │
+│  ██║     ██║   ██║██╔══██╗██╔══╝    ██║   ██║██║   ██║██╔══██║██╔══██╗██║  ██║ │
+│  ███████╗╚██████╔╝██║  ██║███████╗  ╚██████╔╝╚██████╔╝██║  ██║██║  ██║██████╔╝ │
+│  ╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝   ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝  │
+│                                                                                │
+│  Local inference for your game NPCs                                            │
+│  loreguard.com                                                                 │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Run AI-powered game NPCs on local hardware. Loreguard CLI connects your local LLM to games that use the Loreguard NPC system.
+AI-Powered NPCs using your own hardware (your servers or your player's hardware) 
+Loreguard CLI connects the LLM Inference to the Loreguard NPC system.
 
 ## How It Works
 
 ```
-┌─────────────────┐      WebSocket      ┌─────────────────┐
-│   Your Game     │◄──────────────────►│  Loreguard API  │
-│  (NPC Dialog)   │                     │    (Backend)    │
-└─────────────────┘                     └────────┬────────┘
-                                                 │
-                                                 │ Routes inference
-                                                 │ to your worker
-                                                 ▼
-                                        ┌─────────────────┐
-                                        │  Loreguard CLI  │◄── You run this
-                                        │  (This repo)    │
-                                        └────────┬────────┘
-                                                 │
-                                                 │ Local inference
-                                                 ▼
-                                        ┌─────────────────┐
-                                        │   llama.cpp     │
-                                        │  (Your GPU/CPU) │
-                                        └─────────────────┘
+┌─────────────────┐    wss://api.loreguard.com    ┌─────────────────┐
+│   Your Game     │◄────────────────────────────► │  Loreguard API  │
+│  (NPC Dialog)   │                               │    (Backend)    │
+└─────────────────┘                               └────────┬────────┘
+                                                           │
+                                                           │ Routes inference
+                                                           │ to your worker
+                                                           ▼
+                                                  ┌─────────────────┐
+                                                  │  Loreguard CLI  │◄── You run this
+                                                  │  (This repo)    │
+                                                  └────────┬────────┘
+                                                           │
+                                                           │ Local inference
+                                                           ▼
+                                                  ┌─────────────────┐
+                                                  │   llama.cpp     │
+                                                  │  (Your GPU/CPU) │
+                                                  └─────────────────┘
 ```
 
 ## Installation
