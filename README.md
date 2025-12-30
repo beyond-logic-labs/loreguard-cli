@@ -21,7 +21,31 @@
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Local inference client for Loreguard NPCs. Run AI-powered NPCs on your own hardware.
+Run AI-powered game NPCs on local hardware. Loreguard CLI connects your local LLM to games that use the Loreguard NPC system.
+
+## How It Works
+
+```
+┌─────────────────┐      WebSocket      ┌─────────────────┐
+│   Your Game     │◄──────────────────►│  Loreguard API  │
+│  (NPC Dialog)   │                     │    (Backend)    │
+└─────────────────┘                     └────────┬────────┘
+                                                 │
+                                                 │ Routes inference
+                                                 │ to your worker
+                                                 ▼
+                                        ┌─────────────────┐
+                                        │  Loreguard CLI  │◄── You run this
+                                        │  (This repo)    │
+                                        └────────┬────────┘
+                                                 │
+                                                 │ Local inference
+                                                 ▼
+                                        ┌─────────────────┐
+                                        │   llama.cpp     │
+                                        │  (Your GPU/CPU) │
+                                        └─────────────────┘
+```
 
 ## Installation
 
@@ -40,24 +64,30 @@ cd loreguard-cli
 pip install -e .
 ```
 
-## Usage
+### Option 3: Build Your Own Binary
 
-### Option 1: Interactive Wizard
+```bash
+git clone https://github.com/beyond-logic-labs/loreguard-cli
+cd loreguard-cli
+pip install -e ".[build]"
+python scripts/build.py
+# Output: dist/loreguard (or dist/loreguard.exe on Windows)
+```
+
+## Quick Start
+
+### Interactive Wizard
 
 ```bash
 loreguard
 ```
 
-Simple terminal wizard that guides you through:
-1. **Authentication** - Enter your worker token (or type `dev` for dev mode)
+The wizard guides you through:
+1. **Authentication** - Enter your worker token
 2. **Model Selection** - Choose or download a model
 3. **Running** - Starts llama-server and connects to backend
 
-Works on any terminal (Windows cmd, PowerShell, bash, zsh, etc.)
-
-### Option 2: CLI (Headless for Games)
-
-Perfect for shipping with your game:
+### Headless CLI
 
 ```bash
 loreguard-cli --token lg_worker_xxx --model /path/to/model.gguf
@@ -69,32 +99,11 @@ Or auto-download a supported model:
 loreguard-cli --token lg_worker_xxx --model-id qwen3-4b-instruct
 ```
 
-**Environment variables (alternative to args):**
+**Environment variables:**
 ```bash
 export LOREGUARD_TOKEN=lg_worker_xxx
 export LOREGUARD_MODEL=/path/to/model.gguf
-# or
-export LOREGUARD_MODEL_ID=qwen3-4b-instruct
-
 loreguard-cli
-```
-
-**Example output:**
-```
-2024-01-15 14:32:05 [INFO] ================================================
-2024-01-15 14:32:05 [INFO] Loreguard CLI - Starting
-2024-01-15 14:32:05 [INFO] ================================================
-2024-01-15 14:32:05 [INFO] Using model: /models/qwen3-4b.gguf
-2024-01-15 14:32:06 [INFO] Starting llama-server on port 8080...
-2024-01-15 14:32:10 [INFO] llama-server ready
-2024-01-15 14:32:10 [INFO] Connecting to wss://api.loreguard.com/workers...
-2024-01-15 14:32:12 [INFO] Backend connection established
-2024-01-15 14:32:12 [INFO] ================================================
-2024-01-15 14:32:12 [INFO] Ready! Waiting for inference requests...
-2024-01-15 14:32:12 [INFO] Press Ctrl+C to stop
-2024-01-15 14:32:12 [INFO] ================================================
-2024-01-15 14:32:45 [INFO] Request #1: Merchant | 156 tokens | 423ms TTFT | 3.2s total | 48.7 tk/s
-2024-01-15 14:33:02 [INFO] Request #2: Guard | 89 tokens | 312ms TTFT | 1.8s total | 49.4 tk/s
 ```
 
 ## Supported Models
@@ -108,26 +117,30 @@ loreguard-cli
 
 Or use any `.gguf` model with `--model /path/to/model.gguf`.
 
-## Embedding in Your Game
+## Use Cases
 
-For shipping with your game, use the CLI mode:
+### For Game Developers (Testing & Development)
+
+Use Loreguard CLI during development to test NPC dialogs with your own hardware:
 
 ```bash
-# In your game's startup script
-./loreguard-cli --token $PLAYER_TOKEN --model ./models/npc-model.gguf &
+# Start the worker
+loreguard-cli --token $YOUR_DEV_TOKEN --model-id qwen3-4b-instruct
+
+# Your game connects to Loreguard API
+# NPC inference requests are routed to your local worker
 ```
 
-Or bundle the Python package:
-```python
-from src.cli import LoreguardCLI
-import asyncio
+### For Players (Coming Soon)
 
-cli = LoreguardCLI(
-    token="lg_worker_xxx",
-    model_path=Path("./models/model.gguf"),
-)
-asyncio.run(cli.run())
-```
+> **Note:** Player distribution support is in development. Currently, players would need their own Loreguard account and token.
+
+We're working on a **Game Keys** system that will allow:
+- Developers to register their game and get a Game API Key
+- Players to run the CLI without needing a Loreguard account
+- Automatic worker provisioning scoped to each game
+
+**Interested in early access?** Contact us at [loreguard.com](https://loreguard.com)
 
 ## Requirements
 
@@ -148,7 +161,7 @@ asyncio.run(cli.run())
 git clone https://github.com/beyond-logic-labs/loreguard-cli
 cd loreguard-cli
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
 # Run interactive wizard
@@ -156,6 +169,9 @@ python -m src.wizard
 
 # Run headless CLI
 python -m src.cli --help
+
+# Run tests
+pytest
 ```
 
 ## License
