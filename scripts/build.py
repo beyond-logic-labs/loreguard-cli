@@ -34,8 +34,22 @@ def main():
         "--onefile",
         "--name", "loreguard",
         "--clean",
+        # Add src to path so imports work
+        "--paths", ".",
+        # Collect all src submodules
+        "--collect-submodules", "src",
         # Add hidden imports that PyInstaller might miss
+        "--hidden-import", "src",
+        "--hidden-import", "src.config",
+        "--hidden-import", "src.llm",
+        "--hidden-import", "src.llama_server",
+        "--hidden-import", "src.tunnel",
+        "--hidden-import", "src.term_ui",
+        "--hidden-import", "src.models_registry",
+        "--hidden-import", "src.cli",
+        "--hidden-import", "src.npc_chat",
         "--hidden-import", "rich",
+        "--hidden-import", "rich.console",
         "--hidden-import", "httpx",
         "--hidden-import", "websockets",
         "--hidden-import", "aiofiles",
