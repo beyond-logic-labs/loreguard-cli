@@ -4,11 +4,20 @@ Local inference client for Loreguard NPCs. Run AI-powered NPCs on your own hardw
 
 ## Installation
 
-```bash
-pip install loreguard
-```
+### Option 1: Download Binary (Recommended)
 
-Or download standalone binaries from [Releases](https://github.com/beyond-logic-labs/loreguard-cli/releases).
+Download standalone binaries from [Releases](https://github.com/beyond-logic-labs/loreguard-cli/releases):
+- `loreguard-linux` - Linux x64
+- `loreguard-macos` - macOS (Intel & Apple Silicon)
+- `loreguard-windows.exe` - Windows x64
+
+### Option 2: Install from Source
+
+```bash
+git clone https://github.com/beyond-logic-labs/loreguard-cli
+cd loreguard-cli
+pip install -e .
+```
 
 ## Usage
 
@@ -104,7 +113,7 @@ asyncio.run(cli.run())
 - **RAM**: 8GB minimum (16GB+ for larger models)
 - **GPU**: Optional but recommended (NVIDIA CUDA or Apple Silicon)
 - **Disk**: 2-6GB depending on model
-- **Python**: 3.10+ (for pip install)
+- **Python**: 3.10+ (if installing from source)
 
 ## Get Your Token
 
@@ -121,10 +130,10 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 
-# Run TUI
-python -m src.tui.app
+# Run interactive wizard
+python -m src.wizard
 
-# Run CLI
+# Run headless CLI
 python -m src.cli --help
 ```
 
