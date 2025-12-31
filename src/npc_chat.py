@@ -3,9 +3,18 @@
 Uses the Loreguard API endpoints:
 - GET  /api/engine/characters - List your registered NPCs
 - POST /api/chat - Chat with an NPC (uses the multi-pass pipeline)
+
+Supports two authentication modes:
+- API Token: For server-side or development use (api_token parameter)
+- Player JWT: For game clients using Steam authentication (player_jwt parameter)
+
+Rate Limits (when using Player JWT):
+- 60 requests/minute per player
+- 1000 requests/minute per studio
 """
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Optional
 
@@ -23,8 +32,49 @@ from .term_ui import (
 )
 
 
+# Configure module logger
+logger = logging.getLogger(__name__)
+
 # Loreguard API base URL
 LOREGUARD_API_URL = "https://api.loreguard.com"
+
+
+@dataclass
+class ClientConfig:
+    """Configuration for Loreguard client.
+
+    Attributes:
+        connect_timeout: Timeout for establishing connection (seconds).
+        read_timeout: Timeout for reading response (seconds).
+        chat_timeout: Extended timeout for chat requests (seconds).
+    """
+
+    connect_timeout: float = 5.0
+    read_timeout: float = 30.0
+    chat_timeout: float = 120.0
+
+
+class RateLimitError(Exception):
+    """Rate limit exceeded error with details."""
+
+    def __init__(
+        self,
+        message: str,
+        limit_type: str = "unknown",
+        requests_used: int = 0,
+        requests_limit: int = 0,
+        reset_at: Optional[str] = None,
+    ):
+        super().__init__(message)
+        self.limit_type = limit_type
+        self.requests_used = requests_used
+        self.requests_limit = requests_limit
+        self.reset_at = reset_at
+
+    def __str__(self):
+        if self.reset_at:
+            return f"{self.args[0]} ({self.requests_used}/{self.requests_limit}, resets at {self.reset_at})"
+        return f"{self.args[0]} ({self.requests_used}/{self.requests_limit})"
 
 
 @dataclass
@@ -42,29 +92,93 @@ class ChatMessage:
 
 
 class LoreguardClient:
-    """Client for the Loreguard API."""
+    """Client for the Loreguard API.
 
-    def __init__(self, api_token: str, base_url: str = LOREGUARD_API_URL):
+    Supports two authentication modes:
+    - api_token: For server-side or development use
+    - player_jwt: For game clients using Steam authentication
+
+    Only one of api_token or player_jwt should be provided.
+    """
+
+    def __init__(
+        self,
+        api_token: Optional[str] = None,
+        player_jwt: Optional[str] = None,
+        base_url: str = LOREGUARD_API_URL,
+        config: Optional[ClientConfig] = None,
+    ):
+        if not api_token and not player_jwt:
+            raise ValueError("Either api_token or player_jwt must be provided")
+        if api_token and player_jwt:
+            raise ValueError("Only one of api_token or player_jwt should be provided")
+
         self.api_token = api_token
+        self.player_jwt = player_jwt
         self.base_url = base_url.rstrip("/")
+        self.config = config or ClientConfig()
 
     def _headers(self) -> dict:
+        token = self.api_token or self.player_jwt
         return {
-            "Authorization": f"Bearer {self.api_token}",
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
 
+    def _get_timeout(self, for_chat: bool = False) -> httpx.Timeout:
+        """Get configured timeout settings.
+
+        Args:
+            for_chat: Use extended timeout for chat requests.
+        """
+        read_timeout = self.config.chat_timeout if for_chat else self.config.read_timeout
+        return httpx.Timeout(
+            connect=self.config.connect_timeout,
+            read=read_timeout,
+            write=read_timeout,
+            pool=self.config.connect_timeout,
+        )
+
+    def _handle_rate_limit(self, response: httpx.Response) -> None:
+        """Check for rate limit errors and raise RateLimitError with details."""
+        if response.status_code == 429:
+            try:
+                data = response.json()
+            except Exception:
+                data = {}
+
+            logger.warning(
+                "Rate limited: %s/%s requests (type=%s, resets=%s)",
+                data.get("requests_used", "?"),
+                data.get("requests_limit", "?"),
+                data.get("limit_type", "unknown"),
+                data.get("reset_at", "?"),
+            )
+
+            raise RateLimitError(
+                message=data.get("error", "Rate limit exceeded"),
+                limit_type=data.get("limit_type", "unknown"),
+                requests_used=data.get("requests_used", 0),
+                requests_limit=data.get("requests_limit", 0),
+                reset_at=data.get("reset_at"),
+            )
+
     async def list_characters(self) -> list[NPCCharacter]:
         """Fetch list of registered NPCs."""
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        logger.debug("Fetching character list from %s", self.base_url)
+
+        async with httpx.AsyncClient(timeout=self._get_timeout()) as client:
             response = await client.get(
                 f"{self.base_url}/api/engine/characters",
                 headers=self._headers(),
             )
+            self._handle_rate_limit(response)
             response.raise_for_status()
             data = response.json()
 
-        return [NPCCharacter(id=c["id"], name=c["name"]) for c in data]
+        characters = [NPCCharacter(id=c["id"], name=c["name"]) for c in data]
+        logger.info("Fetched %d characters", len(characters))
+        return characters
 
     async def chat(
         self,
@@ -78,6 +192,13 @@ class LoreguardClient:
 
         Returns the full API response with speech, thoughts, citations, etc.
         """
+        logger.debug(
+            "Chat request: character=%s, message_len=%d, history_len=%d",
+            character_id,
+            len(message),
+            len(history) if history else 0,
+        )
+
         history_data = []
         if history:
             history_data = [{"role": m.role, "content": m.content} for m in history]
@@ -91,21 +212,46 @@ class LoreguardClient:
         if context:
             payload["current_context"] = context
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=self._get_timeout(for_chat=True)) as client:
             response = await client.post(
                 f"{self.base_url}/api/chat",
                 headers=self._headers(),
                 json=payload,
             )
+            self._handle_rate_limit(response)
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+
+        logger.info(
+            "Chat response: character=%s, verified=%s, latency=%sms",
+            character_id,
+            result.get("verified", "N/A"),
+            result.get("latency_ms", "N/A"),
+        )
+        return result
 
 
 class NPCChat:
-    """Interactive NPC chat session using Loreguard API."""
+    """Interactive NPC chat session using Loreguard API.
 
-    def __init__(self, api_token: str, base_url: str = LOREGUARD_API_URL):
-        self.client = LoreguardClient(api_token, base_url)
+    Supports two authentication modes:
+    - api_token: For server-side or development use
+    - player_jwt: For game clients using Steam authentication
+    """
+
+    def __init__(
+        self,
+        api_token: Optional[str] = None,
+        player_jwt: Optional[str] = None,
+        base_url: str = LOREGUARD_API_URL,
+        config: Optional[ClientConfig] = None,
+    ):
+        self.client = LoreguardClient(
+            api_token=api_token,
+            player_jwt=player_jwt,
+            base_url=base_url,
+            config=config,
+        )
         self.current_npc: Optional[NPCCharacter] = None
         self.history: list[ChatMessage] = []
         self.use_color = supports_color()
@@ -119,12 +265,16 @@ class NPCChat:
             return await self.client.list_characters()
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
+                logger.error("Authentication failed: invalid API token")
                 raise Exception("Invalid API token - please check your authentication")
             elif e.response.status_code == 404:
+                logger.warning("No characters found for this account")
                 raise Exception("No characters found - register NPCs at loreguard.com first")
+            logger.error("HTTP error fetching characters: %d", e.response.status_code)
             raise
         except httpx.RequestError as e:
-            raise Exception(f"Cannot connect to Loreguard API: {e}")
+            logger.error("Connection error: %s", e)
+            raise Exception("Cannot connect to Loreguard API. Check your network connection.")
 
     async def select_npc(self) -> Optional[NPCCharacter]:
         """Show NPC selection menu."""
@@ -250,6 +400,12 @@ class NPCChat:
                 if len(self.history) > 20:
                     self.history = self.history[-20:]
 
+            except RateLimitError as e:
+                print(f"\r{' ' * 50}\r", end="")
+                print_error(f"Rate limited: {e.requests_used}/{e.requests_limit} requests")
+                if e.reset_at:
+                    print_error(f"  Resets at: {e.reset_at}")
+                print_info("  Wait a moment before sending more messages.")
             except httpx.HTTPStatusError as e:
                 print(f"\r{' ' * 50}\r", end="")
                 if e.response.status_code == 404:
@@ -270,14 +426,25 @@ class NPCChat:
         print_info(f"Chat with {npc.name} ended.")
 
 
-async def run_npc_chat(api_token: str, base_url: str = LOREGUARD_API_URL) -> None:
+async def run_npc_chat(
+    api_token: Optional[str] = None,
+    player_jwt: Optional[str] = None,
+    base_url: str = LOREGUARD_API_URL,
+    config: Optional[ClientConfig] = None,
+) -> None:
     """Run the NPC chat mode.
 
     Args:
-        api_token: Loreguard API token for authentication
+        api_token: Loreguard API token for authentication (for server-side use)
+        player_jwt: Player JWT from Steam exchange (for game clients)
         base_url: Loreguard API base URL (default: https://api.loreguard.com)
+        config: Optional client configuration for timeouts
+
+    Note:
+        Only one of api_token or player_jwt should be provided.
+        Player JWTs are subject to rate limiting (60 req/min per player).
     """
-    chat = NPCChat(api_token=api_token, base_url=base_url)
+    chat = NPCChat(api_token=api_token, player_jwt=player_jwt, base_url=base_url, config=config)
 
     while True:
         npc = await chat.select_npc()
