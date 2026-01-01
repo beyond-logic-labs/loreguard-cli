@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "loreguard"
+name = "loreguard-cli"
 version = "0.3.0"
 description = "Local inference client for Loreguard NPCs"
 readme = "README.md"
@@ -27,6 +27,12 @@ dependencies = [
     "pydantic>=2.5.0",
     "aiofiles>=24.1.0",
 ]
+
+[project.urls]
+Homepage = "https://loreguard.com"
+Documentation = "https://github.com/beyond-logic-labs/loreguard-cli#readme"
+Repository = "https://github.com/beyond-logic-labs/loreguard-cli"
+Issues = "https://github.com/beyond-logic-labs/loreguard-cli/issues"
 
 [project.optional-dependencies]
 dev = [
