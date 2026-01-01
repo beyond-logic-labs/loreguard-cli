@@ -1,5 +1,6 @@
 # Loreguard
 
+[![PyPI version](https://img.shields.io/pypi/v/loreguard-cli.svg)](https://pypi.org/project/loreguard-cli/)
 [![Build](https://github.com/beyond-logic-labs/loreguard-cli/actions/workflows/release.yml/badge.svg)](https://github.com/beyond-logic-labs/loreguard-cli/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -57,7 +58,13 @@ Download standalone binaries from [Releases](https://github.com/beyond-logic-lab
 - `loreguard-macos` - macOS (Intel & Apple Silicon)
 - `loreguard-windows.exe` - Windows x64
 
-### Option 2: Install from Source
+### Option 2: Install from PyPI
+
+```bash
+pip install loreguard-cli
+```
+
+### Option 3: Install from Source
 
 ```bash
 git clone https://github.com/beyond-logic-labs/loreguard-cli
@@ -65,7 +72,7 @@ cd loreguard-cli
 pip install -e .
 ```
 
-### Option 3: Build Your Own Binary
+### Option 4: Build Your Own Binary
 
 ```bash
 git clone https://github.com/beyond-logic-labs/loreguard-cli
