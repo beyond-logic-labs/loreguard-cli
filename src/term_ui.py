@@ -150,6 +150,24 @@ def getch() -> str:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
+def kbhit() -> bool:
+    """Check if a key has been pressed (non-blocking)."""
+    if is_windows():
+        import msvcrt
+        return msvcrt.kbhit()
+    else:
+        import select
+        return select.select([sys.stdin], [], [], 0)[0] != []
+
+
+def check_for_cancel() -> bool:
+    """Check if ESC or Ctrl+C was pressed (non-blocking). Returns True if cancel requested."""
+    if not kbhit():
+        return False
+    key = getch()
+    return key in ('ESC', '\x1b', '\x03', 'q')
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Box drawing with CDE style
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -559,14 +577,15 @@ class InputField:
 class ProgressDisplay:
     """Progress bar in a panel."""
 
-    def __init__(self, title: str = "", total: int = 100, subtitle: str = ""):
+    def __init__(self, title: str = "", total: int = 100, subtitle: str = "", footer: str = ""):
         self.title = title
         self.subtitle = subtitle
         self.total = total
         self.current = 0
         self.message = ""
+        self.footer = footer
         self.use_color = supports_color()
-        self.panel = Panel(height=8)
+        self.panel = Panel(height=9)
 
     def _c(self, color: str) -> str:
         return color if self.use_color else ""
@@ -607,7 +626,7 @@ class ProgressDisplay:
         lines.append("")
         lines.append(f"  {bar}  {c(Colors.BRIGHT_WHITE)}{pct * 100:.0f}%{c(Colors.RESET)}")
 
-        self.panel.render(lines, title=self.title)
+        self.panel.render(lines, title=self.title, footer=self.footer)
 
     def clear(self):
         self.panel.clear()

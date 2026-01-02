@@ -24,6 +24,7 @@ from .term_ui import (
     print_success,
     print_error,
     print_info,
+    check_for_cancel,
 )
 
 # Quiet logging
@@ -363,8 +364,13 @@ async def step_model_selection() -> Optional[Path]:
     return model_path
 
 
+class DownloadCancelled(Exception):
+    """Raised when user cancels download."""
+    pass
+
+
 async def download_model(model, dest: Path) -> Optional[Path]:
-    """Download a model with progress display."""
+    """Download a model with progress display. Returns None if cancelled."""
     import httpx
 
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -373,6 +379,7 @@ async def download_model(model, dest: Path) -> Optional[Path]:
         title=f"Downloading {model.name}",
         total=model.size_bytes or 1,
         subtitle=model.url,
+        footer="Esc to cancel",
     )
 
     try:
@@ -385,6 +392,10 @@ async def download_model(model, dest: Path) -> Optional[Path]:
 
                 with open(dest, "wb") as f:
                     async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                        # Check for cancel between chunks
+                        if check_for_cancel():
+                            raise DownloadCancelled()
+
                         f.write(chunk)
                         downloaded += len(chunk)
                         progress.update(
@@ -394,6 +405,13 @@ async def download_model(model, dest: Path) -> Optional[Path]:
 
         progress.clear()
         return dest
+
+    except DownloadCancelled:
+        progress.clear()
+        print_info("Download cancelled")
+        if dest.exists():
+            dest.unlink()
+        return None
 
     except Exception as e:
         progress.clear()
