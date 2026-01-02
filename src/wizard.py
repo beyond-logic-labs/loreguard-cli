@@ -374,7 +374,7 @@ async def run_local_chat(port: int = 8080) -> None:
     print(f"{c(Colors.BRIGHT_MAGENTA)}  Local Chat (Dev Mode){c(Colors.RESET)}")
     print(f"{c(Colors.MUTED)}  Chatting directly with llama-server on port {port}{c(Colors.RESET)}")
     print(f"{c(Colors.CYAN)}{'─' * 60}{c(Colors.RESET)}")
-    print(f"{c(Colors.MUTED)}  Type your message and press Enter. Type 'quit' to exit.{c(Colors.RESET)}")
+    print(f"{c(Colors.MUTED)}  Commands: /help /clear /quit{c(Colors.RESET)}")
     print()
 
     history = []
@@ -389,7 +389,32 @@ async def run_local_chat(port: int = 8080) -> None:
         if not user_input:
             continue
 
-        if user_input.lower() in ("quit", "exit", "/quit", "/exit"):
+        # Handle commands
+        if user_input.startswith("/"):
+            cmd = user_input.lower().strip()
+
+            if cmd in ("/quit", "/exit", "/back"):
+                break
+
+            if cmd == "/help":
+                print()
+                print(f"{c(Colors.MUTED)}Available commands:{c(Colors.RESET)}")
+                print(f"  {c(Colors.CYAN)}/clear{c(Colors.RESET)}  - Clear conversation history")
+                print(f"  {c(Colors.CYAN)}/quit{c(Colors.RESET)}   - Exit chat")
+                print()
+                continue
+
+            if cmd == "/clear":
+                history = []
+                print(f"{c(Colors.MUTED)}Conversation history cleared.{c(Colors.RESET)}")
+                print()
+                continue
+
+            # Unknown command
+            print(f"{c(Colors.MUTED)}Unknown command. Type /help for available commands.{c(Colors.RESET)}")
+            continue
+
+        if user_input.lower() in ("quit", "exit"):
             break
 
         # Build messages
