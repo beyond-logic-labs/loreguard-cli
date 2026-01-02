@@ -51,35 +51,28 @@ Loreguard CLI connects the LLM Inference to the Loreguard NPC system.
 
 ## Installation
 
-### Option 1: Download Binary (Recommended)
-
-Download standalone binaries from [Releases](https://github.com/beyond-logic-labs/loreguard-cli/releases):
-- `loreguard-linux` - Linux x64
-- `loreguard-macos` - macOS (Intel & Apple Silicon)
-- `loreguard-windows.exe` - Windows x64
-
-### Option 2: Install from PyPI
+### Linux / macOS
 
 ```bash
 pip install loreguard-cli
 ```
 
-### Option 3: Install from Source
+### Windows
+
+Download `loreguard.exe` from [Releases](https://github.com/beyond-logic-labs/loreguard-cli/releases).
+
+Or install via pip if you have Python:
+
+```bash
+pip install loreguard-cli
+```
+
+### From Source
 
 ```bash
 git clone https://github.com/beyond-logic-labs/loreguard-cli
 cd loreguard-cli
 pip install -e .
-```
-
-### Option 4: Build Your Own Binary
-
-```bash
-git clone https://github.com/beyond-logic-labs/loreguard-cli
-cd loreguard-cli
-pip install -e ".[build]"
-python scripts/build.py
-# Output: dist/loreguard (or dist/loreguard.exe on Windows)
 ```
 
 ## Quick Start

@@ -7,18 +7,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            artifact: loreguard-linux
-          - os: macos-latest
-            artifact: loreguard-macos
-          - os: windows-latest
-            artifact: loreguard-windows.exe
-
-    runs-on: ${{ matrix.os }}
+  build-windows:
+    runs-on: windows-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -36,40 +26,30 @@ jobs:
       - name: Build with PyInstaller
         run: python scripts/build.py
 
-      - name: Rename artifact (Unix)
-        if: runner.os != 'Windows'
-        run: mv dist/loreguard dist/${{ matrix.artifact }}
-
-      - name: Rename artifact (Windows)
-        if: runner.os == 'Windows'
-        run: move dist\loreguard.exe dist\${{ matrix.artifact }}
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}
+          name: loreguard-windows.exe
+          path: dist/loreguard.exe
 
   release:
-    needs: build
+    needs: build-windows
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
 
     steps:
-      - name: Download all artifacts
+      - name: Download Windows artifact
         uses: actions/download-artifact@v4
         with:
+          name: loreguard-windows.exe
           path: artifacts
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: |
-            artifacts/loreguard-linux/loreguard-linux
-            artifacts/loreguard-macos/loreguard-macos
-            artifacts/loreguard-windows.exe/loreguard-windows.exe
+          files: artifacts/loreguard.exe
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
