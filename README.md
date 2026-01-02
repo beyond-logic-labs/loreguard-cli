@@ -116,14 +116,15 @@ loreguard-cli
 
 ## Supported Models
 
-| Model ID | Name | Size | Notes |
-|----------|------|------|-------|
-| `qwen3-4b-instruct` | Qwen3 4B Instruct | 2.8 GB | **Recommended** |
-| `llama-3.2-3b-instruct` | Llama 3.2 3B | 2.0 GB | Fast |
-| `qwen3-8b` | Qwen3 8B | 5.2 GB | Higher quality |
-| `meta-llama-3-8b-instruct` | Llama 3 8B | 4.9 GB | General purpose |
+Works with any `.gguf` model. Tested with the following model families:
 
-Or use any `.gguf` model with `--model /path/to/model.gguf`.
+- **Qwen** - Recommended for best quality/speed balance
+- **Llama** - Meta's open models
+- **GPT** - GPT-style open models
+- **RNJ** - Specialized models
+- **Violet Lotus** - Community fine-tunes
+
+Use any model with `--model /path/to/model.gguf`.
 
 ## Use Cases
 

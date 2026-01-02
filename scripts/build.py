@@ -48,8 +48,6 @@ def main():
         "--hidden-import", "src.models_registry",
         "--hidden-import", "src.cli",
         "--hidden-import", "src.npc_chat",
-        "--hidden-import", "rich",
-        "--hidden-import", "rich.console",
         "--hidden-import", "httpx",
         "--hidden-import", "websockets",
         "--hidden-import", "aiofiles",
@@ -68,11 +66,11 @@ def main():
 
     if result.returncode == 0:
         dist_path = root / "dist" / name
-        print(f"\n✅ Build successful!")
-        print(f"   Binary: {dist_path}")
-        print(f"   Size: {dist_path.stat().st_size / 1024 / 1024:.1f} MB")
+        print(f"\n[OK] Build successful!")
+        print(f"     Binary: {dist_path}")
+        print(f"     Size: {dist_path.stat().st_size / 1024 / 1024:.1f} MB")
     else:
-        print("\n❌ Build failed!")
+        print("\n[FAILED] Build failed!")
         sys.exit(1)
 
 
