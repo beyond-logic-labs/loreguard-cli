@@ -364,6 +364,79 @@ async def step_model_selection() -> Optional[Path]:
     return model_path
 
 
+async def run_local_chat(port: int = 8080) -> None:
+    """Chat directly with llama-server (dev mode)."""
+    import httpx
+
+    c = _c
+    print()
+    print(f"{c(Colors.CYAN)}{'─' * 60}{c(Colors.RESET)}")
+    print(f"{c(Colors.BRIGHT_MAGENTA)}  Local Chat (Dev Mode){c(Colors.RESET)}")
+    print(f"{c(Colors.MUTED)}  Chatting directly with llama-server on port {port}{c(Colors.RESET)}")
+    print(f"{c(Colors.CYAN)}{'─' * 60}{c(Colors.RESET)}")
+    print(f"{c(Colors.MUTED)}  Type your message and press Enter. Type 'quit' to exit.{c(Colors.RESET)}")
+    print()
+
+    history = []
+    base_url = f"http://127.0.0.1:{port}"
+
+    while True:
+        try:
+            user_input = input(f"{c(Colors.BRIGHT_GREEN)}You:{c(Colors.RESET)} ").strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+
+        if not user_input:
+            continue
+
+        if user_input.lower() in ("quit", "exit", "/quit", "/exit"):
+            break
+
+        # Build messages
+        history.append({"role": "user", "content": user_input})
+
+        # Show thinking indicator
+        print(f"{c(Colors.MUTED)}  Thinking...{c(Colors.RESET)}", end="", flush=True)
+
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    f"{base_url}/v1/chat/completions",
+                    json={
+                        "messages": history,
+                        "max_tokens": 512,
+                        "temperature": 0.7,
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+
+            # Clear thinking indicator
+            print(f"\r{' ' * 30}\r", end="")
+
+            # Extract response
+            assistant_msg = data["choices"][0]["message"]["content"]
+            history.append({"role": "assistant", "content": assistant_msg})
+
+            # Show response
+            print(f"{c(Colors.BRIGHT_CYAN)}Model:{c(Colors.RESET)} {assistant_msg}")
+            print()
+
+            # Keep history manageable
+            if len(history) > 20:
+                history = history[-20:]
+
+        except httpx.RequestError as e:
+            print(f"\r{' ' * 30}\r", end="")
+            print_error(f"Connection error: {e}")
+        except Exception as e:
+            print(f"\r{' ' * 30}\r", end="")
+            print_error(f"Error: {e}")
+
+    print()
+    print_info("Local chat ended.")
+
+
 class DownloadCancelled(Exception):
     """Raised when user cancels download."""
     pass
@@ -513,49 +586,68 @@ async def step_start(
 
     status.clear()
 
-    # Offer chat option (requires authentication with Loreguard API)
-    if not dev_mode:
-        mode_menu = Menu(
-            items=[
-                MenuItem(
-                    label="Chat with NPC",
-                    value="chat",
-                    description="Interactive chat using Loreguard API",
-                ),
-                MenuItem(
-                    label="Run as worker",
-                    value="server",
-                    description="Wait for inference requests from Loreguard",
-                ),
-            ],
-            title="What would you like to do?",
-            prompt="llama-server is ready. Your worker is connected to Loreguard.",
-        )
-
-        mode_choice = mode_menu.run()
-
-        if mode_choice and mode_choice.value == "chat":
-            from .npc_chat import run_npc_chat
-
-            try:
-                await run_npc_chat(api_token=token)
-            except KeyboardInterrupt:
-                pass
-
-            # After chat, cleanup
-            if tunnel:
-                try:
-                    await tunnel.disconnect()
-                except:
-                    pass
-            llama.stop()
-            print_success("Goodbye!")
-            return 0
+    # Build menu options based on mode
+    if dev_mode:
+        menu_items = [
+            MenuItem(
+                label="Chat locally",
+                value="local_chat",
+                description="Chat directly with llama-server (raw model)",
+            ),
+            MenuItem(
+                label="Run llama-server",
+                value="server",
+                description="Keep server running at http://localhost:8080",
+            ),
+        ]
+        prompt_text = "llama-server is ready. Dev mode (local only)."
     else:
-        # Dev mode - no API access, just run server
-        print_info("Dev mode: llama-server running at http://localhost:8080")
-        print_info("Chat with NPCs requires authentication (not dev mode).")
-        print()
+        menu_items = [
+            MenuItem(
+                label="Chat with NPC",
+                value="chat",
+                description="Interactive chat using Loreguard API",
+            ),
+            MenuItem(
+                label="Run as worker",
+                value="server",
+                description="Wait for inference requests from Loreguard",
+            ),
+        ]
+        prompt_text = "llama-server is ready. Your worker is connected to Loreguard."
+
+    mode_menu = Menu(
+        items=menu_items,
+        title="What would you like to do?",
+        prompt=prompt_text,
+    )
+
+    mode_choice = mode_menu.run()
+
+    if mode_choice and mode_choice.value == "chat":
+        from .npc_chat import run_npc_chat
+
+        try:
+            await run_npc_chat(api_token=token)
+        except KeyboardInterrupt:
+            pass
+
+        # After chat, cleanup
+        if tunnel:
+            try:
+                await tunnel.disconnect()
+            except:
+                pass
+        llama.stop()
+        print_success("Goodbye!")
+        return 0
+
+    if mode_choice and mode_choice.value == "local_chat":
+        # Local chat with llama-server directly
+        await run_local_chat(port=8080)
+        llama.stop()
+        print_success("Goodbye!")
+        return 0
 
     # Running state (server mode)
     status = StatusDisplay(title="Loreguard Running", height=12)
