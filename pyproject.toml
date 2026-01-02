@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "loreguard-cli"
-version = "0.3.5"
+version = "0.3.6"
 description = "Local inference client for Loreguard NPCs"
 readme = "README.md"
 license = "MIT"
@@ -45,8 +45,7 @@ build = [
 ]
 
 [project.scripts]
-loreguard = "src.wizard:main"
-loreguard-cli = "src.cli:main"
+loreguard = "src.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]

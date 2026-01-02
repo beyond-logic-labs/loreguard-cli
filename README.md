@@ -77,7 +77,7 @@ pip install -e .
 
 ## Quick Start
 
-### Interactive Wizard
+### Interactive Mode (no arguments)
 
 ```bash
 loreguard
@@ -88,23 +88,23 @@ The wizard guides you through:
 2. **Model Selection** - Choose or download a model
 3. **Running** - Starts llama-server and connects to backend
 
-### Headless CLI
+### Headless Mode (with arguments)
 
 ```bash
-loreguard-cli --token lg_worker_xxx --model /path/to/model.gguf
+loreguard --token lg_worker_xxx --model /path/to/model.gguf
 ```
 
 Or auto-download a supported model:
 
 ```bash
-loreguard-cli --token lg_worker_xxx --model-id qwen3-4b-instruct
+loreguard --token lg_worker_xxx --model-id qwen3-4b-instruct
 ```
 
 **Environment variables:**
 ```bash
 export LOREGUARD_TOKEN=lg_worker_xxx
 export LOREGUARD_MODEL=/path/to/model.gguf
-loreguard-cli
+loreguard
 ```
 
 ## Supported Models

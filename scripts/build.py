@@ -52,8 +52,8 @@ def main():
         "--hidden-import", "websockets",
         "--hidden-import", "aiofiles",
         "--hidden-import", "pydantic",
-        # Entry point - the interactive wizard
-        "src/wizard.py",
+        # Entry point - unified command
+        "src/__main__.py",
     ]
 
     # Add icon on Windows/macOS
