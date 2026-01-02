@@ -50,8 +50,8 @@ def print_banner():
 │  {c(Colors.BRIGHT_CYAN)}███████╗╚██████╔╝██║  ██║███████╗{c(Colors.BRIGHT_MAGENTA)}╚██████╔╝╚██████╔╝██║  ██║██║  ██║██████╔╝{c(Colors.CYAN)} │
 │  {c(Colors.BRIGHT_CYAN)}╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝ {c(Colors.BRIGHT_MAGENTA)}╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ {c(Colors.CYAN)} │
 │                                                                              │
-│  {c(Colors.WHITE)}Local inference for your game NPCs{c(Colors.CYAN)}                                       │
-│  {c(Colors.GRAY)}loreguard.com{c(Colors.CYAN)}                                                              │
+│  {c(Colors.WHITE)}Local inference for your game NPCs{c(Colors.CYAN)}                                         │
+│  {c(Colors.GRAY)}loreguard.com{c(Colors.CYAN)}                                                                │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘{c(Colors.RESET)}
 """
