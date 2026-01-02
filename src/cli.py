@@ -318,9 +318,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  loreguard-cli --token lg_worker_xxx --model ./model.gguf
-  loreguard-cli --token lg_worker_xxx --model-id qwen3-4b
-  LOREGUARD_TOKEN=lg_worker_xxx loreguard-cli --model-id qwen3-4b
+  loreguard --token lg_worker_xxx --model ./model.gguf
+  loreguard --token lg_worker_xxx --model-id qwen3-4b
+  loreguard --chat --token lg_worker_xxx   # Test NPC chat (no model needed)
+  loreguard --dev --model-id qwen3-4b      # Local dev mode
 
 Available model IDs:
   qwen3-4b-instruct    Qwen3 4B Instruct (recommended, 2.8 GB)
@@ -367,11 +368,33 @@ Available model IDs:
         action="store_true",
         help="Dev mode - skip backend connection, just run llama-server",
     )
+    parser.add_argument(
+        "--chat",
+        action="store_true",
+        help="Chat mode - test NPC chat via Loreguard API (no model needed)",
+    )
 
     args = parser.parse_args()
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
+
+    # Chat mode - test NPC chat directly via API (no model needed)
+    if args.chat:
+        if not args.token:
+            log.error("Token required for chat mode. Use --token or set LOREGUARD_TOKEN")
+            sys.exit(1)
+
+        log.info("=" * 50)
+        log.info("Loreguard Chat Mode - Testing NPC Pipeline")
+        log.info("=" * 50)
+
+        from .npc_chat import run_npc_chat
+        try:
+            asyncio.run(run_npc_chat(api_token=args.token))
+        except KeyboardInterrupt:
+            pass
+        sys.exit(0)
 
     # Dev mode - skip token validation
     if args.dev:

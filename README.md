@@ -107,6 +107,19 @@ export LOREGUARD_MODEL=/path/to/model.gguf
 loreguard
 ```
 
+### Chat Mode (test NPC pipeline)
+
+Test your NPC chat without running a local model:
+
+```bash
+loreguard --chat --token lg_worker_xxx
+```
+
+This connects directly to the Loreguard API to:
+- List your registered NPCs
+- Select one to chat with
+- See verification status and latency
+
 ## Supported Models
 
 Works with any `.gguf` model. Tested with the following model families:
