@@ -328,8 +328,7 @@ class NPCChat:
         print(f"{c(Colors.BRIGHT_MAGENTA)}  Chatting with {npc.name}{c(Colors.RESET)}")
         print(f"{c(Colors.MUTED)}  Using Loreguard API (grounded responses){c(Colors.RESET)}")
         print(f"{c(Colors.CYAN)}{'─' * 60}{c(Colors.RESET)}")
-        print(f"{c(Colors.MUTED)}  Type your message and press Enter. Type 'quit' to exit.{c(Colors.RESET)}")
-        print(f"{c(Colors.MUTED)}  Type '/debug' to show citations for the last response.{c(Colors.RESET)}")
+        print(f"{c(Colors.MUTED)}  Commands: /help /switch /list /debug /quit{c(Colors.RESET)}")
         print()
 
         last_response: Optional[dict] = None
@@ -344,29 +343,73 @@ class NPCChat:
             if not user_input:
                 continue
 
-            if user_input.lower() in ("quit", "exit", "/quit", "/exit"):
-                break
+            # Handle commands
+            if user_input.startswith("/"):
+                cmd = user_input.lower().strip()
 
-            # Debug command - show last response details
-            if user_input.lower() == "/debug":
-                if last_response:
+                if cmd in ("/quit", "/exit", "/back"):
+                    return "back"
+
+                if cmd == "/help":
                     print()
-                    print(f"{c(Colors.MUTED)}Last response details:{c(Colors.RESET)}")
-                    print(f"  {c(Colors.LABEL)}Verified:{c(Colors.RESET)} {last_response.get('verified', 'N/A')}")
-                    print(f"  {c(Colors.LABEL)}Latency:{c(Colors.RESET)} {last_response.get('latency_ms', 'N/A')}ms")
-                    print(f"  {c(Colors.LABEL)}Retries:{c(Colors.RESET)} {last_response.get('retries', 0)}")
-                    if last_response.get('thoughts'):
-                        print(f"  {c(Colors.LABEL)}Thoughts:{c(Colors.RESET)} {last_response['thoughts']}")
-                    citations = last_response.get('citations', [])
-                    if citations:
-                        print(f"  {c(Colors.LABEL)}Citations:{c(Colors.RESET)}")
-                        for cit in citations:
-                            verified = "✓" if cit.get('verified') else "✗"
-                            print(f"    {verified} [{cit.get('evidence_id', '?')}] {cit.get('claim', '')[:50]}...")
+                    print(f"{c(Colors.MUTED)}Available commands:{c(Colors.RESET)}")
+                    print(f"  {c(Colors.CYAN)}/switch{c(Colors.RESET)}  - Switch to another NPC")
+                    print(f"  {c(Colors.CYAN)}/list{c(Colors.RESET)}    - List all available NPCs")
+                    print(f"  {c(Colors.CYAN)}/debug{c(Colors.RESET)}   - Show details of last response")
+                    print(f"  {c(Colors.CYAN)}/clear{c(Colors.RESET)}   - Clear conversation history")
+                    print(f"  {c(Colors.CYAN)}/quit{c(Colors.RESET)}    - Exit chat")
                     print()
-                else:
-                    print(f"{c(Colors.MUTED)}No previous response.{c(Colors.RESET)}")
+                    continue
+
+                if cmd == "/switch":
+                    return "switch"
+
+                if cmd == "/list":
+                    print()
+                    print(f"{c(Colors.MUTED)}Fetching NPCs...{c(Colors.RESET)}")
+                    try:
+                        characters = await self.fetch_characters()
+                        print(f"{c(Colors.MUTED)}Available NPCs:{c(Colors.RESET)}")
+                        for char in characters:
+                            current = " (current)" if char.id == npc.id else ""
+                            print(f"  {c(Colors.CYAN)}•{c(Colors.RESET)} {char.name}{c(Colors.MUTED)}{current}{c(Colors.RESET)}")
+                        print()
+                    except Exception as e:
+                        print_error(str(e))
+                    continue
+
+                if cmd == "/clear":
+                    self.history = []
+                    print(f"{c(Colors.MUTED)}Conversation history cleared.{c(Colors.RESET)}")
+                    print()
+                    continue
+
+                if cmd == "/debug":
+                    if last_response:
+                        print()
+                        print(f"{c(Colors.MUTED)}Last response details:{c(Colors.RESET)}")
+                        print(f"  {c(Colors.LABEL)}Verified:{c(Colors.RESET)} {last_response.get('verified', 'N/A')}")
+                        print(f"  {c(Colors.LABEL)}Latency:{c(Colors.RESET)} {last_response.get('latency_ms', 'N/A')}ms")
+                        print(f"  {c(Colors.LABEL)}Retries:{c(Colors.RESET)} {last_response.get('retries', 0)}")
+                        if last_response.get('thoughts'):
+                            print(f"  {c(Colors.LABEL)}Thoughts:{c(Colors.RESET)} {last_response['thoughts']}")
+                        citations = last_response.get('citations', [])
+                        if citations:
+                            print(f"  {c(Colors.LABEL)}Citations:{c(Colors.RESET)}")
+                            for cit in citations:
+                                verified = "✓" if cit.get('verified') else "✗"
+                                print(f"    {verified} [{cit.get('evidence_id', '?')}] {cit.get('claim', '')[:50]}...")
+                        print()
+                    else:
+                        print(f"{c(Colors.MUTED)}No previous response.{c(Colors.RESET)}")
+                    continue
+
+                # Unknown command
+                print(f"{c(Colors.MUTED)}Unknown command. Type /help for available commands.{c(Colors.RESET)}")
                 continue
+
+            if user_input.lower() in ("quit", "exit"):
+                return "back"
 
             # Show thinking indicator
             print(f"{c(Colors.MUTED)}  {npc.name} is thinking...{c(Colors.RESET)}", end="", flush=True)
@@ -424,6 +467,7 @@ class NPCChat:
 
         print()
         print_info(f"Chat with {npc.name} ended.")
+        return "back"
 
 
 async def run_npc_chat(
@@ -451,18 +495,12 @@ async def run_npc_chat(
         if npc is None:
             break
 
-        await chat.chat(npc)
+        result = await chat.chat(npc)
 
-        # Ask if they want to chat with another NPC
-        print()
-        continue_menu = Menu(
-            items=[
-                MenuItem(label="Chat with another NPC", value="continue"),
-                MenuItem(label="Exit chat mode", value="exit"),
-            ],
-            title="Continue?",
-            prompt="What would you like to do?",
-        )
-        choice = continue_menu.run()
-        if choice is None or choice.value == "exit":
+        # Handle chat result
+        if result == "switch":
+            # Go back to NPC selection
+            continue
+        else:
+            # "back" or any other - exit chat mode
             break

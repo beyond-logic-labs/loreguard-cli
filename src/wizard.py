@@ -595,9 +595,9 @@ async def step_start(
                 description="Chat directly with llama-server (raw model)",
             ),
             MenuItem(
-                label="Run llama-server",
+                label="Monitor llama-server",
                 value="server",
-                description="Keep server running at http://localhost:8080",
+                description="View stats at http://localhost:8080",
             ),
         ]
         prompt_text = "llama-server is ready. Dev mode (local only)."
@@ -609,9 +609,9 @@ async def step_start(
                 description="Interactive chat using Loreguard API",
             ),
             MenuItem(
-                label="Run as worker",
+                label="Monitor worker",
                 value="server",
-                description="Wait for inference requests from Loreguard",
+                description="View stats and wait for inference requests",
             ),
         ]
         prompt_text = "llama-server is ready. Your worker is connected to Loreguard."
