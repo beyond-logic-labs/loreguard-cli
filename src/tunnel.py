@@ -14,7 +14,7 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 import websockets
 from rich.console import Console
@@ -64,11 +64,12 @@ class BackendTunnel:
         self._reconnect_delay = 1  # Start with 1 second
         self._max_reconnect_delay = 60  # Max 60 seconds
         self._running = True
+        self._shutdown_requested = False
         self._heartbeat_task: asyncio.Task | None = None
 
         # Callback for metrics (called after each request completes)
         # Signature: (npc_name: str, tokens: int, ttft_ms: float, total_ms: float) -> None
-        self.on_request_complete: callable | None = None
+        self.on_request_complete: Callable[[str, int, float, float], None] | None = None
 
     async def connect(self):
         """Establish and maintain connection to backend with auto-reconnect."""
@@ -98,6 +99,7 @@ class BackendTunnel:
 
         self.ws = await websockets.connect(
             self.backend_url,
+            additional_headers={"Authorization": f"Bearer {self.worker_token}"},
             ping_interval=30,
             ping_timeout=10,
         )
@@ -210,9 +212,16 @@ class BackendTunnel:
                 logger.warning(f"Heartbeat failed: {e}")
                 break
 
+    async def shutdown(self):
+        """Request graceful shutdown."""
+        self._shutdown_requested = True
+        if self.ws:
+            await self.ws.close()
+
     async def disconnect(self):
         """Close connection."""
         self._running = False
+        self._shutdown_requested = True
 
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
@@ -242,6 +251,8 @@ class BackendTunnel:
         """Handle incoming messages from backend."""
         try:
             async for message in self.ws:
+                if self._shutdown_requested:
+                    break
                 try:
                     data = json.loads(message)
                     await self._process_message(data)
@@ -251,6 +262,9 @@ class BackendTunnel:
                     logger.exception("Error processing message")
                     console.print(f"[red]Error processing message: {e}[/red]")
 
+        except asyncio.CancelledError:
+            logger.info("Message handler cancelled")
+            raise
         except websockets.ConnectionClosed as e:
             console.print(f"[yellow]Connection closed: {e.reason}[/yellow]")
             self.connected = False
