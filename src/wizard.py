@@ -6,9 +6,12 @@ Arrow-key navigation, colorful UI, works on any terminal.
 
 import asyncio
 import logging
+import platform
 import signal
+import subprocess
 import sys
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Optional
 
 from .term_ui import (
@@ -56,6 +59,202 @@ def print_banner():
 └──────────────────────────────────────────────────────────────────────────────┘{c(Colors.RESET)}
 """
     print(banner)
+
+
+@dataclass
+class HardwareInfo:
+    cpu: str
+    ram_gb: Optional[float]
+    gpu: str
+
+
+def _run_cmd(args: list[str]) -> str:
+    try:
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=3,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return ""
+
+
+def _get_cpu_name() -> str:
+    cpu = platform.processor().strip()
+    if cpu:
+        return cpu
+
+    if sys.platform == "darwin":
+        cpu = _run_cmd(["sysctl", "-n", "machdep.cpu.brand_string"])
+    elif sys.platform.startswith("linux"):
+        try:
+            with open("/proc/cpuinfo", "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.lower().startswith("model name"):
+                        return line.split(":", 1)[1].strip()
+        except Exception:
+            cpu = ""
+    elif sys.platform.startswith("win"):
+        cpu = _run_cmd(["wmic", "cpu", "get", "name"])
+        lines = [line.strip() for line in cpu.splitlines() if line.strip() and "name" not in line.lower()]
+        cpu = lines[0] if lines else ""
+
+    return cpu or "Unknown"
+
+
+def _get_ram_gb() -> Optional[float]:
+    ram_bytes = None
+    if sys.platform == "darwin":
+        mem = _run_cmd(["sysctl", "-n", "hw.memsize"])
+        if mem.isdigit():
+            ram_bytes = int(mem)
+    elif sys.platform.startswith("linux"):
+        try:
+            with open("/proc/meminfo", "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        parts = line.split()
+                        if len(parts) >= 2 and parts[1].isdigit():
+                            ram_bytes = int(parts[1]) * 1024
+                        break
+        except Exception:
+            ram_bytes = None
+    elif sys.platform.startswith("win"):
+        try:
+            import ctypes
+
+            class _MemoryStatus(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_uint),
+                    ("dwMemoryLoad", ctypes.c_uint),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            status = _MemoryStatus()
+            status.dwLength = ctypes.sizeof(_MemoryStatus)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
+            ram_bytes = int(status.ullTotalPhys)
+        except Exception:
+            ram_bytes = None
+
+    if not ram_bytes:
+        return None
+    return round(ram_bytes / (1024 ** 3), 1)
+
+
+def _get_gpu_name() -> str:
+    if sys.platform == "darwin":
+        output = _run_cmd(["system_profiler", "SPDisplaysDataType"])
+        lines = []
+        for line in output.splitlines():
+            if "Chipset Model:" in line:
+                lines.append(line.split(":", 1)[1].strip())
+        if lines:
+            return ", ".join(lines)
+    elif sys.platform.startswith("linux"):
+        output = _run_cmd(["lspci"])
+        gpus = []
+        for line in output.splitlines():
+            lower = line.lower()
+            if "vga compatible controller" in lower or "3d controller" in lower:
+                gpus.append(line.split(":", 2)[-1].strip())
+        if gpus:
+            return ", ".join(gpus)
+
+        output = _run_cmd(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
+        if output:
+            lines = [line.strip() for line in output.splitlines() if line.strip()]
+            if lines:
+                return ", ".join(lines)
+    elif sys.platform.startswith("win"):
+        output = _run_cmd(["wmic", "path", "win32_VideoController", "get", "name"])
+        lines = [line.strip() for line in output.splitlines() if line.strip() and "name" not in line.lower()]
+        if lines:
+            return ", ".join(lines)
+
+    return "Unknown"
+
+
+def detect_hardware() -> HardwareInfo:
+    return HardwareInfo(
+        cpu=_get_cpu_name(),
+        ram_gb=_get_ram_gb(),
+        gpu=_get_gpu_name(),
+    )
+
+
+def _format_ram_gb(ram_gb: Optional[float]) -> str:
+    return f"{ram_gb:.1f} GB" if ram_gb is not None else "Unknown"
+
+
+def _estimate_too_big(model_size_gb: float, ram_gb: Optional[float]) -> bool:
+    if ram_gb is None:
+        return False
+    usable_ram = max(0.0, ram_gb - 2.0)
+    return model_size_gb > usable_ram
+
+
+def _suggest_model_id(models, hardware: Optional[HardwareInfo]) -> Optional[str]:
+    if not hardware or hardware.ram_gb is None:
+        return None
+
+    ram = hardware.ram_gb
+    if ram >= 24:
+        preferred = [
+            "gpt-oss-20b",
+            "qwen3-8b",
+            "rnj-1-instruct",
+            "qwen3-4b-instruct",
+            "llama-3.2-3b-instruct",
+            "qwen3-1.7b",
+        ]
+    elif ram >= 16:
+        preferred = [
+            "qwen3-8b",
+            "rnj-1-instruct",
+            "qwen3-4b-instruct",
+            "llama-3.2-3b-instruct",
+            "qwen3-1.7b",
+        ]
+    elif ram >= 12:
+        preferred = [
+            "qwen3-8b",
+            "rnj-1-instruct",
+            "qwen3-4b-instruct",
+            "llama-3.2-3b-instruct",
+            "qwen3-1.7b",
+        ]
+    elif ram >= 8:
+        preferred = [
+            "qwen3-4b-instruct",
+            "llama-3.2-3b-instruct",
+            "qwen3-1.7b",
+        ]
+    elif ram >= 6:
+        preferred = [
+            "llama-3.2-3b-instruct",
+            "qwen3-1.7b",
+        ]
+    else:
+        preferred = ["qwen3-1.7b"]
+
+    model_by_id = {model.id: model for model in models}
+    for model_id in preferred:
+        model = model_by_id.get(model_id)
+        if not model:
+            continue
+        if not _estimate_too_big(model.size_gb, ram):
+            return model_id
+    return None
 
 
 async def step_authentication() -> tuple[Optional[str], Optional[str], bool]:
@@ -253,7 +452,7 @@ async def _auth_with_token() -> tuple[Optional[str], Optional[str], bool]:
         return await _auth_with_token()
 
 
-async def step_model_selection() -> Optional[Path]:
+async def step_model_selection(hardware: Optional[HardwareInfo]) -> Optional[Path]:
     """Step 2: Select and optionally download a model."""
     print_info("Step 2/3: Model Selection")
     print()
@@ -262,6 +461,7 @@ async def step_model_selection() -> Optional[Path]:
     from .llama_server import get_models_dir
 
     models_dir = get_models_dir()
+    suggested_id = _suggest_model_id(SUPPORTED_MODELS, hardware)
 
     # Check which models are installed
     installed_ids = set()
@@ -277,10 +477,16 @@ async def step_model_selection() -> Optional[Path]:
         else:
             tag = f"{model.size_gb:.1f} GB"
 
+        is_too_big = _estimate_too_big(model.size_gb, hardware.ram_gb if hardware else None)
+
+        if model.id == suggested_id:
+            tag += " • suggested"
         if model.recommended:
             tag += " • recommended"
         if model.experimental:
             tag += " • experimental"
+        if is_too_big:
+            tag += " • too big"
 
         # Show hardware requirements in description
         desc = f"{model.hardware}"
@@ -745,6 +951,12 @@ async def run_wizard() -> int:
     """Run the setup wizard."""
     try:
         print_banner()
+        hardware = detect_hardware()
+        print_info(
+            "Detected hardware: "
+            f"CPU {hardware.cpu} • RAM {_format_ram_gb(hardware.ram_gb)} • GPU {hardware.gpu}"
+        )
+        print()
 
         # Step 1: Authentication
         token, worker_id, dev_mode = await step_authentication()
@@ -753,7 +965,7 @@ async def run_wizard() -> int:
             return 1
 
         # Step 2: Model Selection
-        model_path = await step_model_selection()
+        model_path = await step_model_selection(hardware)
         if model_path is None:
             print_error("Cancelled")
             return 1
