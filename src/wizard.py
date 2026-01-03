@@ -265,26 +265,51 @@ def _format_gpu_info(hardware: HardwareInfo) -> str:
     return " • ".join(parts)
 
 
-def _estimate_too_big(model_size_gb: float, ram_gb: Optional[float], vram_gb: Optional[float]) -> bool:
-    usable_ram = max(0.0, ram_gb - 2.0) if ram_gb is not None else None
-    if usable_ram is not None and model_size_gb > usable_ram:
-        return True
-    if usable_ram is None and vram_gb is not None and model_size_gb > vram_gb:
-        return True
-    return False
-
-
-def _estimate_ram_spillover(model_size_gb: float, vram_gb: Optional[float]) -> bool:
-    if vram_gb is None:
+def _is_shared_memory_gpu(hardware: HardwareInfo) -> bool:
+    if not hardware.gpu_mem_type:
         return False
-    return model_size_gb > vram_gb
+    mem_type = hardware.gpu_mem_type.lower()
+    return "unified" in mem_type or "shared" in mem_type
+
+
+def _effective_vram_gb(hardware: Optional[HardwareInfo]) -> Optional[float]:
+    if not hardware:
+        return None
+    if _is_shared_memory_gpu(hardware):
+        return None
+    return hardware.gpu_vram_gb
+
+
+def _classify_model_fit(model_size_gb: float, hardware: Optional[HardwareInfo]) -> str:
+    if not hardware:
+        return "unknown"
+    vram_gb = _effective_vram_gb(hardware)
+    usable_ram = max(0.0, hardware.ram_gb - 2.0) if hardware.ram_gb is not None else None
+
+    if vram_gb is not None:
+        if model_size_gb <= vram_gb:
+            return "fits_vram"
+        if usable_ram is not None and model_size_gb <= usable_ram:
+            return "ram_spill"
+        return "too_big"
+
+    if usable_ram is not None:
+        if model_size_gb <= usable_ram:
+            return "fits_ram"
+        return "too_big"
+
+    return "unknown"
 
 
 def _suggest_model_id(models, hardware: Optional[HardwareInfo]) -> Optional[str]:
-    if not hardware or hardware.ram_gb is None:
+    if not hardware:
         return None
 
     ram = hardware.ram_gb
+    if ram is None:
+        ram = _effective_vram_gb(hardware)
+    if ram is None:
+        return None
     if ram >= 24:
         preferred = [
             "gpt-oss-20b",
@@ -325,12 +350,19 @@ def _suggest_model_id(models, hardware: Optional[HardwareInfo]) -> Optional[str]
         preferred = ["qwen3-1.7b"]
 
     model_by_id = {model.id: model for model in models}
+    ranked = {"fits_vram": [], "ram_spill": [], "fits_ram": []}
+
     for model_id in preferred:
         model = model_by_id.get(model_id)
         if not model:
             continue
-        if not _estimate_too_big(model.size_gb, ram, hardware.gpu_vram_gb if hardware else None):
-            return model_id
+        fit = _classify_model_fit(model.size_gb, hardware)
+        if fit in ranked:
+            ranked[fit].append(model_id)
+
+    for bucket in ("fits_vram", "ram_spill", "fits_ram"):
+        if ranked[bucket]:
+            return ranked[bucket][0]
     return None
 
 
@@ -554,15 +586,7 @@ async def step_model_selection(hardware: Optional[HardwareInfo]) -> Optional[Pat
         else:
             tag = f"{model.size_gb:.1f} GB"
 
-        is_too_big = _estimate_too_big(
-            model.size_gb,
-            hardware.ram_gb if hardware else None,
-            hardware.gpu_vram_gb if hardware else None,
-        )
-        ram_spillover = _estimate_ram_spillover(
-            model.size_gb,
-            hardware.gpu_vram_gb if hardware else None,
-        )
+        fit = _classify_model_fit(model.size_gb, hardware) if hardware else "unknown"
 
         if model.id == suggested_id:
             tag += " • suggested"
@@ -570,9 +594,9 @@ async def step_model_selection(hardware: Optional[HardwareInfo]) -> Optional[Pat
             tag += " • recommended"
         if model.experimental:
             tag += " • experimental"
-        if is_too_big:
+        if fit == "too_big":
             tag += " • too big"
-        if ram_spillover:
+        if fit == "ram_spill":
             tag += " • RAM leak (slow)"
 
         # Show hardware requirements in description
