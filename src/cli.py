@@ -2,15 +2,17 @@
 """Loreguard CLI - Standalone headless mode for embedding in games.
 
 Usage:
-    loreguard-cli --token lg_worker_xxx --model /path/to/model.gguf
-    loreguard-cli --token lg_worker_xxx --model-id qwen3-4b
+    loreguard-cli --token lg_xxx... --model /path/to/model.gguf
+    loreguard-cli --token lg_xxx... --model-id qwen3-4b
+    loreguard-cli --token lg_xxx... --worker-id my-pc --model-id qwen3-4b
 
 Environment variables (alternative to args):
-    LOREGUARD_TOKEN     Worker token
+    LOREGUARD_TOKEN     API token
     LOREGUARD_MODEL     Path to model file
     LOREGUARD_MODEL_ID  Model ID to download (if not using custom model)
     LOREGUARD_PORT      Local llama-server port (default: 8080)
     LOREGUARD_BACKEND   Backend URL (default: wss://api.loreguard.com/workers)
+    LOREGUARD_WORKER_ID Worker ID (default: hostname)
 """
 
 import argparse
@@ -18,6 +20,7 @@ import asyncio
 import logging
 import os
 import signal
+import socket
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -42,12 +45,15 @@ class LoreguardCLI:
         model_id: Optional[str] = None,
         port: int = 8080,
         backend_url: str = "wss://api.loreguard.com/workers",
+        worker_id: Optional[str] = None,
     ):
         self.token = token
         self.model_path = model_path
         self.model_id = model_id
         self.port = port
         self.backend_url = backend_url
+        # Worker ID: use provided value, or default to hostname
+        self.worker_id = worker_id or socket.gethostname() or "worker"
 
         self._llama = None
         self._tunnel = None
@@ -228,18 +234,15 @@ class LoreguardCLI:
         from .llm import LLMProxy
 
         log.info(f"Connecting to {self.backend_url}...")
+        log.info(f"Worker ID: {self.worker_id}")
 
         try:
-            # Extract worker ID from token (format: lg_worker_<id>_<secret>)
-            parts = self.token.split("_")
-            worker_id = parts[2] if len(parts) >= 3 else "worker"
-
             llm_proxy = LLMProxy(f"http://127.0.0.1:{self.port}")
 
             self._tunnel = BackendTunnel(
                 backend_url=self.backend_url,
                 llm_proxy=llm_proxy,
-                worker_id=worker_id,
+                worker_id=self.worker_id,
                 worker_token=self.token,
                 model_id=self.model_path.stem if self.model_path else "unknown",
             )
@@ -318,10 +321,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  loreguard --token lg_worker_xxx --model ./model.gguf
-  loreguard --token lg_worker_xxx --model-id qwen3-4b
-  loreguard --chat --token lg_worker_xxx   # Test NPC chat (no model needed)
-  loreguard --dev --model-id qwen3-4b      # Local dev mode
+  loreguard --token lg_xxx... --model ./model.gguf
+  loreguard --token lg_xxx... --model-id qwen3-4b
+  loreguard --token lg_xxx... --worker-id my-pc --model-id qwen3-4b
+  loreguard --chat --token lg_xxx...   # Test NPC chat (no model needed)
+  loreguard --dev --model-id qwen3-4b  # Local dev mode
 
 Available model IDs:
   qwen3-4b-instruct    Qwen3 4B Instruct (recommended, 2.8 GB)
@@ -334,7 +338,12 @@ Available model IDs:
     parser.add_argument(
         "--token",
         default=os.getenv("LOREGUARD_TOKEN", ""),
-        help="Worker token (or set LOREGUARD_TOKEN env var)",
+        help="API token (or set LOREGUARD_TOKEN env var)",
+    )
+    parser.add_argument(
+        "--worker-id",
+        default=os.getenv("LOREGUARD_WORKER_ID", ""),
+        help="Worker ID (default: hostname)",
     )
     parser.add_argument(
         "--model",
@@ -401,13 +410,9 @@ Available model IDs:
         args.token = "dev_mock_token"
         log.info("Running in DEV MODE - no backend connection")
     else:
-        # Validate token
+        # Validate token is present (server will validate format)
         if not args.token:
             log.error("Token required. Use --token or set LOREGUARD_TOKEN (or use --dev)")
-            sys.exit(1)
-
-        if not args.token.startswith("lg_worker_"):
-            log.error("Invalid token format (must start with lg_worker_)")
             sys.exit(1)
 
     # Validate model
@@ -422,6 +427,7 @@ Available model IDs:
         model_id=args.model_id,
         port=args.port,
         backend_url=args.backend,
+        worker_id=args.worker_id or None,  # None will use hostname
     )
 
     exit_code = asyncio.run(cli.run())

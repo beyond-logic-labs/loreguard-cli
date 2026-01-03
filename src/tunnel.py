@@ -73,9 +73,8 @@ class BackendTunnel:
     async def connect(self):
         """Establish and maintain connection to backend with auto-reconnect."""
         if not self.worker_id or not self.worker_token:
-            console.print("[red]Error: WORKER_ID and WORKER_TOKEN are required[/red]")
-            console.print("[yellow]Generate a token using the backend CLI:[/yellow]")
-            console.print("  go run cmd/token/main.go generate -local -worker-id <id> -model-id <model>")
+            console.print("[red]Error: Worker ID and API token are required[/red]")
+            console.print("[yellow]Get an API token from loreguard.com dashboard[/yellow]")
             return
 
         while self._running:

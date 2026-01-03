@@ -29,10 +29,11 @@ def load_config() -> dict:
         "PORT": os.getenv("PORT", "8081"),
 
         # Worker authentication (required for backend connection)
-        # Generate tokens using: go run cmd/token/main.go generate -local -worker-id <id> -model-id <model>
-        "WORKER_ID": os.getenv("WORKER_ID", ""),
-        "WORKER_TOKEN": os.getenv("WORKER_TOKEN", ""),
-        "MODEL_ID": os.getenv("MODEL_ID", "default"),
+        # Get API token from loreguard.com dashboard
+        "WORKER_ID": os.getenv("LOREGUARD_WORKER_ID", os.getenv("WORKER_ID", "")),
+        # LOREGUARD_TOKEN is preferred, WORKER_TOKEN kept for backwards compatibility
+        "LOREGUARD_TOKEN": os.getenv("LOREGUARD_TOKEN", os.getenv("WORKER_TOKEN", "")),
+        "MODEL_ID": os.getenv("LOREGUARD_MODEL_ID", os.getenv("MODEL_ID", "default")),
 
         # Context limits (in characters, ~4 chars per token)
         # MAX_MESSAGE_LENGTH: Max size of a single message (default 100KB ~25K tokens)

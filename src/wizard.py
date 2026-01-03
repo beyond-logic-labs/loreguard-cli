@@ -380,7 +380,7 @@ async def step_authentication() -> tuple[Optional[str], Optional[str], bool]:
             MenuItem(
                 label="Paste token",
                 value="token",
-                description="Manually enter your worker token",
+                description="Manually enter your API token",
             ),
             MenuItem(
                 label="Dev mode",
@@ -408,18 +408,18 @@ async def step_authentication() -> tuple[Optional[str], Optional[str], bool]:
 
 
 async def _auth_with_token() -> tuple[Optional[str], Optional[str], bool]:
-    """Authenticate with manually entered token."""
+    """Authenticate with manually entered API token."""
     import httpx
+    import socket
 
     def validate_token(value: str) -> Optional[str]:
         if not value:
             return "Token is required"
-        if not value.startswith("lg_worker_"):
-            return "Token must start with 'lg_worker_'"
+        # Accept any non-empty token - server will validate
         return None
 
     input_field = InputField(
-        prompt="Enter your worker token:",
+        prompt="Enter your API token:",
         password=True,
         validator=validate_token,
     )
@@ -429,35 +429,34 @@ async def _auth_with_token() -> tuple[Optional[str], Optional[str], bool]:
     if token is None:
         return await step_authentication()
 
-    # Validate with server
+    # Validate with server using /api/auth/me endpoint
     status = StatusDisplay(title="Validating Token", height=5)
     status.set_line(0, "Status", "Connecting to server...")
     status.draw()
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                "https://api.loreguard.com/api/workers/validate",
-                json={"token": token},
+            response = await client.get(
+                "https://api.loreguard.com/api/auth/me",
+                headers={"Authorization": f"Bearer {token}"},
             )
             status.clear()
 
             if response.status_code == 200:
                 data = response.json()
-                if data.get("valid") is False:
-                    print_error("Invalid token")
-                    print()
-                    return await _auth_with_token()
-                worker_id = data.get("workerId", "worker")
-                print_success(f"Authenticated as {worker_id}")
+                # Use studio name or email as identifier for display
+                display_name = data.get("studio", {}).get("name") or data.get("email", "user")
+                print_success(f"Authenticated as {display_name}")
                 print()
+                # Generate worker_id from hostname
+                worker_id = socket.gethostname() or "worker"
                 return token, worker_id, False
-            elif response.status_code == 404:
-                print_error("Invalid token or validation unavailable")
+            elif response.status_code == 401:
+                print_error("Invalid or expired token")
                 print()
                 return await _auth_with_token()
             else:
-                print_error("Invalid token")
+                print_error(f"Authentication failed (status {response.status_code})")
                 print()
                 return await _auth_with_token()
 
