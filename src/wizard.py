@@ -66,6 +66,8 @@ class HardwareInfo:
     cpu: str
     ram_gb: Optional[float]
     gpu: str
+    gpu_vram_gb: Optional[float]
+    gpu_mem_type: Optional[str]
 
 
 def _run_cmd(args: list[str]) -> str:
@@ -151,16 +153,63 @@ def _get_ram_gb() -> Optional[float]:
     return round(ram_bytes / (1024 ** 3), 1)
 
 
-def _get_gpu_name() -> str:
+def _parse_vram_to_gb(value: str) -> Optional[float]:
+    value = value.strip()
+    if not value:
+        return None
+    parts = value.replace(",", "").split()
+    if len(parts) < 2:
+        return None
+    try:
+        amount = float(parts[0])
+    except ValueError:
+        return None
+    unit = parts[1].lower()
+    if unit.startswith("gb"):
+        return round(amount, 1)
+    if unit.startswith("mb"):
+        return round(amount / 1024.0, 1)
+    if unit.startswith("kb"):
+        return round(amount / (1024.0 * 1024.0), 2)
+    return None
+
+
+def _get_gpu_info() -> tuple[str, Optional[float], Optional[str]]:
     if sys.platform == "darwin":
         output = _run_cmd(["system_profiler", "SPDisplaysDataType"])
-        lines = []
+        names: list[str] = []
+        vram: Optional[float] = None
+        mem_type: Optional[str] = None
         for line in output.splitlines():
             if "Chipset Model:" in line:
-                lines.append(line.split(":", 1)[1].strip())
-        if lines:
-            return ", ".join(lines)
+                names.append(line.split(":", 1)[1].strip())
+            if "VRAM (Total):" in line:
+                vram = _parse_vram_to_gb(line.split(":", 1)[1])
+            if "VRAM (Dynamic, Max):" in line and vram is None:
+                vram = _parse_vram_to_gb(line.split(":", 1)[1])
+            if "Memory Type:" in line:
+                mem_type = line.split(":", 1)[1].strip()
+        if names:
+            return ", ".join(names), vram, mem_type
+
     elif sys.platform.startswith("linux"):
+        output = _run_cmd(["nvidia-smi", "--query-gpu=name,memory.total,memory.type", "--format=csv,noheader"])
+        if output:
+            names = []
+            vram = None
+            mem_type = None
+            for line in output.splitlines():
+                parts = [part.strip() for part in line.split(",")]
+                if not parts:
+                    continue
+                names.append(parts[0])
+                if len(parts) > 1 and vram is None:
+                    vram = _parse_vram_to_gb(parts[1])
+                if len(parts) > 2 and mem_type is None:
+                    mem_type = parts[2] or None
+            if names:
+                return ", ".join(names), vram, mem_type
+
         output = _run_cmd(["lspci"])
         gpus = []
         for line in output.splitlines():
@@ -168,32 +217,52 @@ def _get_gpu_name() -> str:
             if "vga compatible controller" in lower or "3d controller" in lower:
                 gpus.append(line.split(":", 2)[-1].strip())
         if gpus:
-            return ", ".join(gpus)
+            return ", ".join(gpus), None, None
 
-        output = _run_cmd(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
-        if output:
-            lines = [line.strip() for line in output.splitlines() if line.strip()]
-            if lines:
-                return ", ".join(lines)
     elif sys.platform.startswith("win"):
-        output = _run_cmd(["wmic", "path", "win32_VideoController", "get", "name"])
-        lines = [line.strip() for line in output.splitlines() if line.strip() and "name" not in line.lower()]
-        if lines:
-            return ", ".join(lines)
+        output = _run_cmd(["wmic", "path", "win32_VideoController", "get", "name,AdapterRAM"])
+        names = []
+        vram = None
+        for line in output.splitlines():
+            if not line.strip() or "name" in line.lower():
+                continue
+            parts = [part for part in line.split() if part.strip()]
+            if not parts:
+                continue
+            if parts[-1].isdigit():
+                ram_bytes = int(parts[-1])
+                vram = round(ram_bytes / (1024 ** 3), 1) if vram is None else vram
+                names.append(" ".join(parts[:-1]))
+            else:
+                names.append(" ".join(parts))
+        if names:
+            return ", ".join(names), vram, None
 
-    return "Unknown"
+    return "Unknown", None, None
 
 
 def detect_hardware() -> HardwareInfo:
+    gpu_name, gpu_vram_gb, gpu_mem_type = _get_gpu_info()
     return HardwareInfo(
         cpu=_get_cpu_name(),
         ram_gb=_get_ram_gb(),
-        gpu=_get_gpu_name(),
+        gpu=gpu_name,
+        gpu_vram_gb=gpu_vram_gb,
+        gpu_mem_type=gpu_mem_type,
     )
 
 
 def _format_ram_gb(ram_gb: Optional[float]) -> str:
     return f"{ram_gb:.1f} GB" if ram_gb is not None else "Unknown"
+
+
+def _format_gpu_info(hardware: HardwareInfo) -> str:
+    parts = [hardware.gpu]
+    if hardware.gpu_vram_gb is not None:
+        parts.append(f"{hardware.gpu_vram_gb:.1f} GB VRAM")
+    if hardware.gpu_mem_type:
+        parts.append(hardware.gpu_mem_type)
+    return " • ".join(parts)
 
 
 def _estimate_too_big(model_size_gb: float, ram_gb: Optional[float]) -> bool:
@@ -954,7 +1023,7 @@ async def run_wizard() -> int:
         hardware = detect_hardware()
         print_info(
             "Detected hardware: "
-            f"CPU {hardware.cpu} • RAM {_format_ram_gb(hardware.ram_gb)} • GPU {hardware.gpu}"
+            f"CPU {hardware.cpu} • RAM {_format_ram_gb(hardware.ram_gb)} • GPU {_format_gpu_info(hardware)}"
         )
         print()
 
