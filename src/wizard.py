@@ -265,11 +265,19 @@ def _format_gpu_info(hardware: HardwareInfo) -> str:
     return " • ".join(parts)
 
 
-def _estimate_too_big(model_size_gb: float, ram_gb: Optional[float]) -> bool:
-    if ram_gb is None:
+def _estimate_too_big(model_size_gb: float, ram_gb: Optional[float], vram_gb: Optional[float]) -> bool:
+    usable_ram = max(0.0, ram_gb - 2.0) if ram_gb is not None else None
+    if usable_ram is not None and model_size_gb > usable_ram:
+        return True
+    if usable_ram is None and vram_gb is not None and model_size_gb > vram_gb:
+        return True
+    return False
+
+
+def _estimate_ram_spillover(model_size_gb: float, vram_gb: Optional[float]) -> bool:
+    if vram_gb is None:
         return False
-    usable_ram = max(0.0, ram_gb - 2.0)
-    return model_size_gb > usable_ram
+    return model_size_gb > vram_gb
 
 
 def _suggest_model_id(models, hardware: Optional[HardwareInfo]) -> Optional[str]:
@@ -321,7 +329,7 @@ def _suggest_model_id(models, hardware: Optional[HardwareInfo]) -> Optional[str]
         model = model_by_id.get(model_id)
         if not model:
             continue
-        if not _estimate_too_big(model.size_gb, ram):
+        if not _estimate_too_big(model.size_gb, ram, hardware.gpu_vram_gb if hardware else None):
             return model_id
     return None
 
@@ -546,7 +554,15 @@ async def step_model_selection(hardware: Optional[HardwareInfo]) -> Optional[Pat
         else:
             tag = f"{model.size_gb:.1f} GB"
 
-        is_too_big = _estimate_too_big(model.size_gb, hardware.ram_gb if hardware else None)
+        is_too_big = _estimate_too_big(
+            model.size_gb,
+            hardware.ram_gb if hardware else None,
+            hardware.gpu_vram_gb if hardware else None,
+        )
+        ram_spillover = _estimate_ram_spillover(
+            model.size_gb,
+            hardware.gpu_vram_gb if hardware else None,
+        )
 
         if model.id == suggested_id:
             tag += " • suggested"
@@ -556,6 +572,8 @@ async def step_model_selection(hardware: Optional[HardwareInfo]) -> Optional[Pat
             tag += " • experimental"
         if is_too_big:
             tag += " • too big"
+        if ram_spillover:
+            tag += " • RAM leak (slow)"
 
         # Show hardware requirements in description
         desc = f"{model.hardware}"
