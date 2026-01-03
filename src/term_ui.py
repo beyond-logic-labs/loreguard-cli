@@ -1,9 +1,20 @@
 """Terminal UI with colors and inline rendering (doesn't clear history)."""
 
 import os
+import re
 import sys
+import textwrap
 from dataclasses import dataclass
 from typing import List, Optional, Callable
+
+_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+_OSC_8_RE = re.compile(r"\033\]8;;.*?\033\\")
+
+
+def _visible_len(text: str) -> int:
+    stripped = _ANSI_RE.sub("", text)
+    stripped = _OSC_8_RE.sub("", stripped)
+    return len(stripped)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -269,9 +280,8 @@ class Panel:
         for i in range(content_height):
             if i < len(lines):
                 line = lines[i]
-                # Strip ANSI codes for length calculation
-                import re
-                visible_len = len(re.sub(r'\033\[[0-9;]*m', '', line))
+                # Strip ANSI/OSC sequences for length calculation
+                visible_len = _visible_len(line)
                 padding = width - visible_len - 4  # 2 for borders, 2 for inner padding
                 if padding < 0:
                     # Truncate line
@@ -284,7 +294,7 @@ class Panel:
 
         # Footer line (inside box)
         if footer:
-            footer_visible_len = len(re.sub(r'\033\[[0-9;]*m', '', footer))
+            footer_visible_len = _visible_len(footer)
             footer_padding = width - footer_visible_len - 4
             footer_line = f"{border_color}{Box.V}{reset}  {footer_color}{footer}{reset}{' ' * footer_padding}{border_color}{Box.V}{reset}"
             rendered_lines.append(footer_line)
@@ -590,6 +600,9 @@ class ProgressDisplay:
     def _c(self, color: str) -> str:
         return color if self.use_color else ""
 
+    def _link_text(self, text: str, url: str) -> str:
+        return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
+
     def update(self, current: int, message: str = ""):
         """Update progress."""
         self.current = current
@@ -609,11 +622,12 @@ class ProgressDisplay:
 
         # Subtitle (e.g., URL)
         if self.subtitle:
-            # Truncate long URLs
-            display_url = self.subtitle
-            if len(display_url) > 60:
-                display_url = display_url[:57] + "..."
-            lines.append(f"{c(Colors.MUTED)}{display_url}{c(Colors.RESET)}")
+            wrap_width = max(10, self.panel.width - 4)
+            subtitle_lines = textwrap.wrap(self.subtitle, width=wrap_width)
+            is_url = self.subtitle.startswith(("http://", "https://"))
+            for line in subtitle_lines:
+                display_line = self._link_text(line, self.subtitle) if is_url else line
+                lines.append(f"{c(Colors.MUTED)}{display_line}{c(Colors.RESET)}")
             lines.append("")
 
         # Progress message

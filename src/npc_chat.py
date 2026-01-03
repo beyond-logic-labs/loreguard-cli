@@ -1,7 +1,7 @@
 """NPC chat mode - talk to NPCs using the Loreguard API.
 
 Uses the Loreguard API endpoints:
-- GET  /api/engine/characters - List your registered NPCs
+- GET  /api/characters - List your registered NPCs
 - POST /api/chat - Chat with an NPC (uses the multi-pass pipeline)
 
 Supports two authentication modes:
@@ -169,7 +169,7 @@ class LoreguardClient:
 
         async with httpx.AsyncClient(timeout=self._get_timeout()) as client:
             response = await client.get(
-                f"{self.base_url}/api/engine/characters",
+                f"{self.base_url}/api/characters",
                 headers=self._headers(),
             )
             self._handle_rate_limit(response)
