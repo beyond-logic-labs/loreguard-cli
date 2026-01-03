@@ -378,11 +378,6 @@ async def step_authentication() -> tuple[Optional[str], Optional[str], bool]:
     auth_menu = Menu(
         items=[
             MenuItem(
-                label="Login with browser",
-                value="browser",
-                description="Opens loreguard.com to authenticate",
-            ),
-            MenuItem(
                 label="Paste token",
                 value="token",
                 description="Manually enter your worker token",
@@ -394,7 +389,7 @@ async def step_authentication() -> tuple[Optional[str], Optional[str], bool]:
             ),
         ],
         title="Authentication",
-        prompt="How do you want to authenticate?",
+        prompt="Choose an authentication method:",
     )
 
     auth_choice = auth_menu.run()
@@ -408,94 +403,8 @@ async def step_authentication() -> tuple[Optional[str], Optional[str], bool]:
         print()
         return "dev_mock_token", "dev-worker", True
 
-    # Browser authentication
-    if auth_choice.value == "browser":
-        return await _auth_with_browser()
-
     # Manual token entry
     return await _auth_with_token()
-
-
-async def _auth_with_browser() -> tuple[Optional[str], Optional[str], bool]:
-    """Authenticate via browser OAuth flow."""
-    import httpx
-    import webbrowser
-    import secrets
-
-    status = StatusDisplay(title="Browser Authentication", height=6)
-    status.set_line(0, "Status", "Starting authentication...")
-    status.draw()
-
-    # Generate a device code / session ID
-    session_id = secrets.token_urlsafe(16)
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            # Request device auth
-            response = await client.post(
-                "https://api.loreguard.com/api/workers/device-auth",
-                json={"session_id": session_id},
-            )
-
-            if response.status_code == 200:
-                data = response.json()
-                auth_url = data.get("auth_url", f"https://loreguard.com/cli-auth?session={session_id}")
-
-                status.set_line(0, "Status", "Opening browser...")
-                status.set_line(1, "URL", auth_url[:50] + "..." if len(auth_url) > 50 else auth_url)
-                status.draw()
-
-                # Open browser
-                webbrowser.open(auth_url)
-
-                status.set_line(0, "Status", "Waiting for authorization...")
-                status.set_line(2, "", "Complete login in your browser")
-                status.draw()
-
-                # Poll for completion
-                for _ in range(120):  # 2 minute timeout
-                    await asyncio.sleep(2)
-                    poll_response = await client.get(
-                        f"https://api.loreguard.com/api/workers/device-auth/{session_id}"
-                    )
-                    if poll_response.status_code == 200:
-                        poll_data = poll_response.json()
-                        if poll_data.get("status") == "completed":
-                            token = poll_data.get("token")
-                            worker_id = poll_data.get("worker_id", "worker")
-                            status.clear()
-                            print_success(f"Authenticated as {worker_id}")
-                            print()
-                            return token, worker_id, False
-
-                status.clear()
-                print_error("Authentication timed out")
-                print()
-                return await step_authentication()
-
-            elif response.status_code == 404:
-                # Endpoint not ready - fall back to manual token
-                status.clear()
-                print_info("Browser auth not available yet, please paste token")
-                print()
-                return await _auth_with_token()
-            else:
-                status.clear()
-                print_error("Failed to start browser authentication")
-                print()
-                return await step_authentication()
-
-    except httpx.ConnectError:
-        status.clear()
-        print_error("Cannot connect to server")
-        print()
-        return await step_authentication()
-
-    except Exception as e:
-        status.clear()
-        print_error(f"Error: {e}")
-        print()
-        return await step_authentication()
 
 
 async def _auth_with_token() -> tuple[Optional[str], Optional[str], bool]:
@@ -535,14 +444,18 @@ async def _auth_with_token() -> tuple[Optional[str], Optional[str], bool]:
 
             if response.status_code == 200:
                 data = response.json()
+                if data.get("valid") is False:
+                    print_error("Invalid token")
+                    print()
+                    return await _auth_with_token()
                 worker_id = data.get("workerId", "worker")
                 print_success(f"Authenticated as {worker_id}")
                 print()
                 return token, worker_id, False
             elif response.status_code == 404:
-                print_success("Token accepted")
+                print_error("Invalid token or validation unavailable")
                 print()
-                return token, "worker", False
+                return await _auth_with_token()
             else:
                 print_error("Invalid token")
                 print()
