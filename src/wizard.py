@@ -731,7 +731,7 @@ async def step_nli_setup() -> bool:
             ),
         ],
         prompt="Enable NLI fact verification?",
-        show_back=False,
+        allow_cancel=False,
     )
 
     choice = await menu.run()
