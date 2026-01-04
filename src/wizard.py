@@ -716,46 +716,23 @@ async def step_nli_setup() -> bool:
         print_success("NLI model already downloaded")
         return True
 
-    # Ask user
-    menu = Menu(
-        items=[
-            MenuItem(
-                label="Yes, download NLI model (recommended)",
-                value="yes",
-                description="Enables fact-checking for NPCs",
-            ),
-            MenuItem(
-                label="Skip for now",
-                value="no",
-                description="NPCs will work but without verification",
-            ),
-        ],
-        prompt="Enable NLI fact verification?",
-        allow_cancel=False,
-    )
+    # NLI is required for fact verification - download automatically
+    print()
+    print_info("Downloading NLI model from HuggingFace...")
+    print_info("This may take a few minutes on first run.")
+    print()
 
-    choice = await menu.run()
-
-    if choice == "yes":
-        print()
-        print_info("Downloading NLI model from HuggingFace...")
-        print_info("This may take a few minutes on first run.")
-        print()
-
-        try:
-            success = download_nli_model()
-            if success:
-                print_success("NLI model downloaded successfully")
-                return True
-            else:
-                print_error("Failed to download NLI model")
-                print_info("You can try again later by restarting the wizard")
-                return False
-        except Exception as e:
-            print_error(f"Download failed: {e}")
+    try:
+        success = download_nli_model()
+        if success:
+            print_success("NLI model downloaded successfully")
+            return True
+        else:
+            print_error("Failed to download NLI model")
+            print_info("You can try again later by restarting the wizard")
             return False
-    else:
-        print_info("NLI disabled - NPCs will work without fact verification")
+    except Exception as e:
+        print_error(f"Download failed: {e}")
         return False
 
 
