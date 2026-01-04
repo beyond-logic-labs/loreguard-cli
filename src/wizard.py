@@ -30,9 +30,51 @@ from .term_ui import (
     check_for_cancel,
 )
 
-# Quiet logging
-logging.basicConfig(level=logging.WARNING, format="%(message)s")
+# Logger instance - configured by main()
 log = logging.getLogger("loreguard")
+
+
+def _configure_logging(verbose: bool = False) -> Optional[Path]:
+    """Configure logging level based on verbose flag.
+
+    Returns the log file path if verbose mode is enabled, None otherwise.
+
+    In verbose mode:
+    - DEBUG and above go to loreguard-debug.log
+    - WARNING and above still show in console
+    """
+    if verbose:
+        # Write to a log file to avoid corrupting the TUI
+        log_file = Path.cwd() / "loreguard-debug.log"
+
+        # Clear any existing handlers
+        root_logger = logging.getLogger()
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
+
+        # File handler for DEBUG and above
+        file_handler = logging.FileHandler(log_file, mode='w')
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        ))
+
+        # Console handler for WARNING and above (won't corrupt TUI)
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.WARNING)
+        console_handler.setFormatter(logging.Formatter("%(message)s"))
+
+        root_logger.addHandler(file_handler)
+        root_logger.addHandler(console_handler)
+        root_logger.setLevel(logging.DEBUG)
+        log.setLevel(logging.DEBUG)
+        log.debug("Verbose mode enabled - logging to %s", log_file)
+        return log_file
+    else:
+        logging.basicConfig(level=logging.WARNING, format="%(message)s")
+        log.setLevel(logging.WARNING)
+        return None
 
 
 def _c(color: str) -> str:
@@ -242,10 +284,16 @@ def _get_gpu_info() -> tuple[str, Optional[float], Optional[str]]:
 
 
 def detect_hardware() -> HardwareInfo:
+    log.debug("Detecting hardware...")
+    cpu = _get_cpu_name()
+    log.debug(f"CPU: {cpu}")
+    ram_gb = _get_ram_gb()
+    log.debug(f"RAM: {ram_gb} GB")
     gpu_name, gpu_vram_gb, gpu_mem_type = _get_gpu_info()
+    log.debug(f"GPU: {gpu_name}, VRAM: {gpu_vram_gb} GB, type: {gpu_mem_type}")
     return HardwareInfo(
-        cpu=_get_cpu_name(),
-        ram_gb=_get_ram_gb(),
+        cpu=cpu,
+        ram_gb=ram_gb,
         gpu=gpu_name,
         gpu_vram_gb=gpu_vram_gb,
         gpu_mem_type=gpu_mem_type,
@@ -299,6 +347,34 @@ def _classify_model_fit(model_size_gb: float, hardware: Optional[HardwareInfo]) 
         return "too_big"
 
     return "unknown"
+
+
+def _resolve_backend_model_id(filename_stem: str) -> str:
+    """Map local model filename to backend-accepted model ID.
+
+    Backend accepts specific model IDs like qwen3-4b, qwen3-8b, external.
+    We map the local model filename to the closest match.
+    """
+    MODEL_MAPPINGS = {
+        "qwen3-4b": "qwen3-4b",
+        "qwen3-8b": "qwen3-8b",
+        "qwen3-0.6b": "qwen3-0.6b",
+        "qwen3-1.7b": "qwen3-4b",  # Map to closest
+        "llama-3": "llama-3.1-8b",
+        "mistral": "mistral-7b",
+        "phi-3": "phi-3",
+        "tinyllama": "tinyllama",
+    }
+
+    search_str = filename_stem.lower()
+    for pattern, backend_id in MODEL_MAPPINGS.items():
+        if pattern in search_str:
+            log.debug(f"Model ID mapped: {search_str} -> {backend_id}")
+            return backend_id
+
+    # Fallback to 'external' for custom/unknown models
+    log.debug(f"Using 'external' model ID for: {search_str}")
+    return "external"
 
 
 def _suggest_model_id(models, hardware: Optional[HardwareInfo]) -> Optional[str]:
@@ -371,6 +447,7 @@ async def step_authentication() -> tuple[Optional[str], Optional[str], bool]:
 
     Returns: (token, worker_id, dev_mode) or (None, None, False) if cancelled.
     """
+    log.debug("Starting authentication step")
     print_info("Step 1/3: Authentication")
     print()
 
@@ -399,11 +476,13 @@ async def step_authentication() -> tuple[Optional[str], Optional[str], bool]:
 
     # Dev mode
     if auth_choice.value == "dev":
+        log.debug("User selected dev mode")
         print_success("Dev mode enabled (no backend connection)")
         print()
         return "dev_mock_token", "dev-worker", True
 
     # Manual token entry
+    log.debug("User selected token authentication")
     return await _auth_with_token()
 
 
@@ -430,39 +509,54 @@ async def _auth_with_token() -> tuple[Optional[str], Optional[str], bool]:
         return await step_authentication()
 
     # Validate with server using /api/auth/me endpoint
+    log.debug("Validating token with API server...")
+    log.debug("Token: %s...%s (len=%d)", token[:10] if token else "None", token[-4:] if token else "", len(token) if token else 0)
     status = StatusDisplay(title="Validating Token", height=5)
     status.set_line(0, "Status", "Connecting to server...")
     status.draw()
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
+            log.debug("Sending request to https://api.loreguard.com/api/auth/me")
             response = await client.get(
                 "https://api.loreguard.com/api/auth/me",
                 headers={"Authorization": f"Bearer {token}"},
             )
+            log.debug(f"Auth response status: {response.status_code}")
             status.clear()
 
             if response.status_code == 200:
                 data = response.json()
+                log.debug(f"Auth response: {data}")
                 # Use studio name or email as identifier for display
                 display_name = data.get("studio", {}).get("name") or data.get("email", "user")
+                log.debug(f"Authenticated as: {display_name}")
                 print_success(f"Authenticated as {display_name}")
                 print()
-                # Generate worker_id from hostname
-                worker_id = socket.gethostname() or "worker"
+                # Generate worker_id from hostname (sanitized - no dots allowed)
+                hostname = socket.gethostname() or "worker"
+                worker_id = hostname.split(".")[0].replace(" ", "-")
                 return token, worker_id, False
-            elif response.status_code == 401:
-                print_error("Invalid or expired token")
-                print()
-                return await _auth_with_token()
             else:
-                print_error(f"Authentication failed (status {response.status_code})")
+                # Auth failed - show detailed error info
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get("error", response.text[:100])
+                except Exception:
+                    error_msg = response.text[:100] if response.text else "Unknown error"
+
+                print_error(f"Authentication failed")
+                print_error(f"  URL: https://api.loreguard.com/api/auth/me")
+                print_error(f"  Status: {response.status_code}")
+                print_error(f"  Response: {error_msg}")
                 print()
                 return await _auth_with_token()
 
-    except httpx.ConnectError:
+    except httpx.ConnectError as e:
         status.clear()
         print_error("Cannot connect to server")
+        print_error(f"  URL: https://api.loreguard.com/api/auth/me")
+        print_error(f"  Error: {e}")
         print()
         return await _auth_with_token()
 
@@ -475,6 +569,7 @@ async def _auth_with_token() -> tuple[Optional[str], Optional[str], bool]:
 
 async def step_model_selection(hardware: Optional[HardwareInfo]) -> Optional[Path]:
     """Step 2: Select and optionally download a model."""
+    log.debug("Starting model selection step")
     print_info("Step 2/3: Model Selection")
     print()
 
@@ -482,13 +577,16 @@ async def step_model_selection(hardware: Optional[HardwareInfo]) -> Optional[Pat
     from .llama_server import get_models_dir
 
     models_dir = get_models_dir()
+    log.debug(f"Models directory: {models_dir}")
     suggested_id = _suggest_model_id(SUPPORTED_MODELS, hardware)
+    log.debug(f"Suggested model ID: {suggested_id}")
 
     # Check which models are installed
     installed_ids = set()
     for model in SUPPORTED_MODELS:
         if (models_dir / model.filename).exists():
             installed_ids.add(model.id)
+    log.debug(f"Installed models: {installed_ids if installed_ids else 'none'}")
 
     # Build menu items
     items = []
@@ -581,16 +679,84 @@ async def step_model_selection(hardware: Optional[HardwareInfo]) -> Optional[Pat
     model_path = models_dir / model.filename
 
     if model_path.exists():
+        log.debug(f"Model already exists at {model_path}")
         print_success(f"Model ready: {model.name}")
         print()
     else:
+        log.debug(f"Downloading model to {model_path}")
         model_path = await download_model(model, model_path)
         if model_path is None:
             return await step_model_selection()
+        log.debug(f"Download complete: {model_path}")
         print_success(f"Downloaded: {model.name}")
         print()
 
     return model_path
+
+
+async def step_nli_setup() -> bool:
+    """Step 3: NLI model setup for fact verification.
+
+    Returns True if NLI should be enabled, False otherwise.
+    """
+    from .nli import is_nli_model_available, download_nli_model
+
+    c = _c
+    print_header("NLI Fact Verification")
+    print()
+    print(f"{c(Colors.WHITE)}NLI (Natural Language Inference) verifies NPC claims against their")
+    print(f"knowledge base. This prevents NPCs from making up facts.{c(Colors.RESET)}")
+    print()
+    print(f"{c(Colors.MUTED)}Model: RoBERTa Large MNLI (~1.4 GB)")
+    print(f"This runs locally on your machine for fast verification.{c(Colors.RESET)}")
+    print()
+
+    # Check if already downloaded
+    if is_nli_model_available():
+        print_success("NLI model already downloaded")
+        return True
+
+    # Ask user
+    menu = Menu(
+        items=[
+            MenuItem(
+                label="Yes, download NLI model (recommended)",
+                value="yes",
+                description="Enables fact-checking for NPCs",
+            ),
+            MenuItem(
+                label="Skip for now",
+                value="no",
+                description="NPCs will work but without verification",
+            ),
+        ],
+        prompt="Enable NLI fact verification?",
+        show_back=False,
+    )
+
+    choice = await menu.run()
+
+    if choice == "yes":
+        print()
+        print_info("Downloading NLI model from HuggingFace...")
+        print_info("This may take a few minutes on first run.")
+        print()
+
+        try:
+            success = download_nli_model()
+            if success:
+                print_success("NLI model downloaded successfully")
+                return True
+            else:
+                print_error("Failed to download NLI model")
+                print_info("You can try again later by restarting the wizard")
+                return False
+        except Exception as e:
+            print_error(f"Download failed: {e}")
+            return False
+    else:
+        print_info("NLI disabled - NPCs will work without fact verification")
+        return False
 
 
 async def run_local_chat(port: int = 8080) -> None:
@@ -753,9 +919,15 @@ async def step_start(
     token: str,
     worker_id: str,
     dev_mode: bool,
+    nli_enabled: bool = True,
 ) -> int:
-    """Step 3: Start llama-server and connect to backend."""
-    print_info("Step 3/3: Starting Services")
+    """Step 4: Start llama-server, NLI service, and connect to backend."""
+    log.debug("Starting services step")
+    log.debug(f"Model: {model_path}")
+    log.debug(f"Worker ID: {worker_id}")
+    log.debug(f"Dev mode: {dev_mode}")
+    log.debug(f"NLI enabled: {nli_enabled}")
+    print_info("Step 4/4: Starting Services")
     print()
 
     from .llama_server import (
@@ -769,6 +941,7 @@ async def step_start(
 
     # Download llama-server if needed
     if not is_llama_server_installed():
+        log.debug("llama-server not installed, downloading...")
         status.set_line(0, "llama-server", "Downloading...")
         status.draw()
 
@@ -787,29 +960,35 @@ async def step_start(
             return 1
 
     # Start llama-server
+    log.debug("Starting llama-server...")
     status.set_line(0, "llama-server", "Starting...")
     status.set_line(1, "Model", model_path.name)
     status.draw()
 
     llama = LlamaServerProcess(model_path, port=8080)
+    log.debug(f"llama-server command: {llama}")
     llama.start()
 
+    log.debug("Waiting for llama-server to load model...")
     status.set_line(0, "llama-server", "Loading model...")
     status.draw()
 
     ready = await llama.wait_for_ready(timeout=120.0)
     if not ready:
+        log.debug("llama-server failed to start (timeout after 120s)")
         status.clear()
         print_error("llama-server failed to start (timeout)")
         llama.stop()
         return 1
 
+    log.debug("llama-server is ready on port 8080")
     status.set_line(0, "llama-server", "✓ Running on port 8080")
     status.draw()
 
     # Connect to backend (unless dev mode)
     tunnel = None
     if not dev_mode:
+        log.debug("Connecting to backend...")
         status.set_line(2, "Backend", "Connecting...")
         status.draw()
 
@@ -818,20 +997,44 @@ async def step_start(
             from .llm import LLMProxy
 
             llm_proxy = LLMProxy("http://127.0.0.1:8080")
+            log.debug(f"LLM proxy configured for http://127.0.0.1:8080")
+
+            # Initialize NLI service if enabled
+            nli_service = None
+            if nli_enabled:
+                from .nli import NLIService
+                status.set_line(3, "NLI", "Loading model...")
+                status.draw()
+                nli_service = NLIService()
+                if nli_service.load_model():
+                    log.debug(f"NLI service loaded (device: {nli_service.device})")
+                    status.set_line(3, "NLI", f"✓ Ready ({nli_service.device})")
+                else:
+                    log.debug("NLI service failed to load")
+                    status.set_line(3, "NLI", "✗ Failed to load")
+                    nli_service = None
+                status.draw()
+
+            # Map model filename to backend-accepted model ID
+            model_id = _resolve_backend_model_id(model_path.stem)
 
             tunnel = BackendTunnel(
                 backend_url="wss://api.loreguard.com/workers",
                 llm_proxy=llm_proxy,
                 worker_id=worker_id,
                 worker_token=token,
-                model_id=model_path.stem,
+                model_id=model_id,
+                nli_service=nli_service,
             )
+            log.debug(f"Backend tunnel configured: URL=wss://api.loreguard.com/workers, model_id={model_id}")
 
             asyncio.create_task(tunnel.connect())
             await asyncio.sleep(2)
 
+            log.debug("Backend connection established")
             status.set_line(2, "Backend", "✓ Connected")
         except Exception as e:
+            log.debug(f"Backend connection failed: {e}")
             status.set_line(2, "Backend", f"✗ Failed: {e}")
             status.set_line(3, "", "  (local-only mode)")
     else:
@@ -993,8 +1196,11 @@ async def run_wizard() -> int:
             print_error("Cancelled")
             return 1
 
-        # Step 3: Start
-        return await step_start(model_path, token, worker_id, dev_mode)
+        # Step 3: NLI Setup (optional)
+        nli_enabled = await step_nli_setup()
+
+        # Step 4: Start
+        return await step_start(model_path, token, worker_id, dev_mode, nli_enabled=nli_enabled)
 
     except KeyboardInterrupt:
         print()
@@ -1004,8 +1210,12 @@ async def run_wizard() -> int:
         show_cursor()
 
 
-def main():
+def main(verbose: bool = False):
     """Entry point."""
+    log_file = _configure_logging(verbose)
+    if log_file:
+        print(f"Debug logging to: {log_file}")
+        print()
     try:
         exit_code = asyncio.run(run_wizard())
         sys.exit(exit_code)
@@ -1016,4 +1226,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    verbose = any(a in ('-v', '--verbose') for a in sys.argv[1:])
+    main(verbose=verbose)
