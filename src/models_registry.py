@@ -128,3 +128,23 @@ def get_recommended_model() -> ModelInfo:
         if model.recommended:
             return model
     return SUPPORTED_MODELS[0]
+
+
+# NLI (Natural Language Inference) model for fact verification
+# This is a HuggingFace transformer model, not a GGUF file
+# Downloaded automatically via the transformers library to ~/.cache/huggingface/hub/
+@dataclass
+class NLIModelInfo:
+    """Information about the NLI model for fact verification."""
+    id: str                  # HuggingFace model ID
+    name: str                # Display name
+    size_gb: float           # Approximate size in GB
+    description: str         # Short description
+
+
+NLI_MODEL = NLIModelInfo(
+    id="roberta-large-mnli",
+    name="RoBERTa Large MNLI",
+    size_gb=1.4,
+    description="RoBERTa model for Natural Language Inference. Verifies NPC claims against knowledge base.",
+)

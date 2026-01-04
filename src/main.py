@@ -28,6 +28,7 @@ from rich.console import Console
 from .tunnel import BackendTunnel
 from .llm import LLMProxy
 from .config import get_config_value
+from .nli import NLIService, is_nli_model_available
 
 load_dotenv()
 
@@ -46,12 +47,13 @@ app = FastAPI(
 # Global instances
 tunnel: BackendTunnel | None = None
 llm_proxy: LLMProxy | None = None
+nli_service: NLIService | None = None
 
 
 @app.on_event("startup")
 async def startup():
     """Initialize connections on startup."""
-    global tunnel, llm_proxy
+    global tunnel, llm_proxy, nli_service
 
     # Initialize local LLM connection
     llm_url = get_config_value("LLM_ENDPOINT", "http://localhost:8080")
@@ -67,6 +69,20 @@ async def startup():
     else:
         console.print("[yellow]Warning: LLM not available yet[/yellow]")
 
+    # Initialize NLI service (optional - for fact verification)
+    enable_nli = os.getenv("LOREGUARD_NLI_ENABLED", "true").lower() == "true"
+    if enable_nli:
+        console.print("[cyan]Initializing NLI service...[/cyan]")
+        nli_service = NLIService()
+        if nli_service.load_model():
+            console.print(f"[green]NLI service ready (device: {nli_service.device})[/green]")
+        else:
+            console.print("[yellow]Warning: NLI model failed to load[/yellow]")
+            console.print("[yellow]  NLI capability will be disabled[/yellow]")
+            nli_service = None
+    else:
+        console.print("[yellow]NLI service disabled (set LOREGUARD_NLI_ENABLED=true to enable)[/yellow]")
+
     # Connect to remote backend
     backend_url = get_config_value("BACKEND_URL", "wss://api.lorekeeper.ai/workers")
     worker_id = get_config_value("WORKER_ID", "")
@@ -76,7 +92,10 @@ async def startup():
     if backend_url and worker_id and worker_token:
         console.print(f"[green]Connecting to backend:[/green] {backend_url}")
         console.print(f"[green]Worker ID:[/green] {worker_id}")
-        tunnel = BackendTunnel(backend_url, llm_proxy, worker_id, worker_token, model_id)
+        tunnel = BackendTunnel(
+            backend_url, llm_proxy, worker_id, worker_token, model_id,
+            nli_service=nli_service,
+        )
         asyncio.create_task(tunnel.connect())
     elif backend_url:
         console.print("[yellow]Warning: WORKER_ID and WORKER_TOKEN required for backend connection[/yellow]")
@@ -107,6 +126,7 @@ async def health():
         "status": "ok",
         "llm_available": llm_available,
         "backend_connected": tunnel.connected if tunnel else False,
+        "nli_available": nli_service.is_loaded if nli_service else False,
     }
 
 

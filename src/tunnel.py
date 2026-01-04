@@ -14,12 +14,15 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable, Optional, TYPE_CHECKING
 
 import websockets
 from rich.console import Console
 
 from .llm import LLMProxy
+
+if TYPE_CHECKING:
+    from .nli import NLIService
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -51,12 +54,14 @@ class BackendTunnel:
         worker_id: str,
         worker_token: str,
         model_id: str = "default",
+        nli_service: Optional["NLIService"] = None,
     ):
         self.backend_url = backend_url
         self.llm_proxy = llm_proxy
         self.worker_id = worker_id
         self.worker_token = worker_token
         self.model_id = model_id
+        self.nli_service = nli_service
 
         self.ws: websockets.WebSocketClientProtocol | None = None
         self.connected = False
@@ -81,8 +86,16 @@ class BackendTunnel:
         while self._running:
             try:
                 await self._connect_once()
+            except websockets.exceptions.InvalidStatus as e:
+                # Server rejected connection (e.g., 401, 500)
+                logger.error("WebSocket connection rejected: HTTP %s", e.response.status_code)
+                console.print(f"[red]Connection rejected: HTTP {e.response.status_code}[/red]")
+                if e.response.status_code == 401:
+                    console.print("[yellow]  → Invalid or expired token[/yellow]")
+                elif e.response.status_code >= 500:
+                    console.print("[yellow]  → Server error (backend may be down)[/yellow]")
             except Exception as e:
-                logger.exception("Connection error")
+                logger.error("Connection error: %s", e)
                 console.print(f"[red]Connection error: {e}[/red]")
 
             if not self._running:
@@ -134,9 +147,15 @@ class BackendTunnel:
         if not self.ws:
             return False
 
-        # Get available models from local LLM
-        models = await self.llm_proxy.list_models()
-        model_id = models[0] if models else self.model_id
+        # Use the configured model_id (already mapped to backend-accepted ID)
+        # Don't override with LLM server's model name (it returns filenames like Qwen3-4B-Instruct.gguf)
+        model_id = self.model_id
+
+        # Build capabilities list - add "nli" if NLI service is available
+        capabilities = ["chat", "completion"]
+        if self.nli_service is not None and self.nli_service.is_loaded:
+            capabilities.append("nli")
+            console.print("[cyan]NLI capability enabled[/cyan]")
 
         # Build registration message
         register_msg = {
@@ -149,7 +168,7 @@ class BackendTunnel:
                     "id": self.worker_id,
                     "modelId": model_id,
                     "maxTokens": 4096,
-                    "capabilities": ["chat", "completion"],
+                    "capabilities": capabilities,
                     "address": f"localhost:{self.llm_proxy.endpoint.split(':')[-1]}",
                     "status": "ready",
                     "queueDepth": 0,
@@ -279,6 +298,14 @@ class BackendTunnel:
             # Backend wants us to run an LLM query
             await self._handle_intent_request(data)
 
+        elif msg_type == "nli_request":
+            # Backend wants us to run NLI verification
+            await self._handle_nli_request(data)
+
+        elif msg_type == "nli_batch_request":
+            # Backend wants us to run batch NLI verification
+            await self._handle_nli_batch_request(data)
+
         elif msg_type == "ping":
             # Respond to keep-alive ping
             await self._send({
@@ -375,6 +402,161 @@ class BackendTunnel:
                     "workerId": self.worker_id,
                     "success": False,
                     "content": "",
+                    "errorMessage": str(e),
+                },
+            })
+
+    async def _handle_nli_request(self, data: dict):
+        """Handle an NLI verification request from the backend."""
+        payload = data.get("payload", {})
+        request_id = payload.get("requestId")
+        trace_id = data.get("traceId", "")
+
+        if not request_id:
+            console.print("[red]NLI request missing requestId[/red]")
+            return
+
+        if not self.nli_service:
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "nli_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
+                    "errorMessage": "NLI service not available",
+                },
+            })
+            return
+
+        claim = payload.get("claim", "")
+        evidence = payload.get("evidence", "")
+
+        console.print(f"[cyan]NLI request {request_id[:8]}...[/cyan]")
+        start_time = time.time()
+
+        try:
+            result = self.nli_service.verify(claim, evidence)
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "nli_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": True,
+                    "entailment": result.entailment.value,
+                    "confidence": result.confidence,
+                    "probEntailment": result.prob_entailment,
+                    "probNeutral": result.prob_neutral,
+                    "probContradicts": result.prob_contradiction,
+                    "latencyMs": latency_ms,
+                },
+            })
+            console.print(f"[green]NLI response sent: {result.entailment.value} ({latency_ms}ms)[/green]")
+
+        except Exception as e:
+            logger.exception("NLI handling error")
+            console.print(f"[red]NLI error: {e}[/red]")
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "nli_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
+                    "errorMessage": str(e),
+                },
+            })
+
+    async def _handle_nli_batch_request(self, data: dict):
+        """Handle a batch NLI verification request from the backend."""
+        payload = data.get("payload", {})
+        request_id = payload.get("requestId")
+        trace_id = data.get("traceId", "")
+
+        if not request_id:
+            console.print("[red]NLI batch request missing requestId[/red]")
+            return
+
+        if not self.nli_service:
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "nli_batch_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
+                    "errorMessage": "NLI service not available",
+                },
+            })
+            return
+
+        claims = payload.get("claims", [])
+        console.print(f"[cyan]NLI batch request {request_id[:8]}... ({len(claims)} pairs)[/cyan]")
+        start_time = time.time()
+
+        try:
+            # Convert to list of tuples (claim, evidence)
+            pairs = [(c.get("claim", ""), c.get("evidence", "")) for c in claims]
+            results = self.nli_service.verify_batch(pairs)
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            # Convert results to response format
+            result_payloads = []
+            for r in results:
+                result_payloads.append({
+                    "entailment": r.entailment.value,
+                    "confidence": r.confidence,
+                    "probEntailment": r.prob_entailment,
+                    "probNeutral": r.prob_neutral,
+                    "probContradicts": r.prob_contradiction,
+                })
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "nli_batch_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": True,
+                    "results": result_payloads,
+                    "latencyMs": latency_ms,
+                },
+            })
+            console.print(f"[green]NLI batch response sent: {len(results)} results ({latency_ms}ms)[/green]")
+
+        except Exception as e:
+            logger.exception("NLI batch handling error")
+            console.print(f"[red]NLI batch error: {e}[/red]")
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "nli_batch_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
                     "errorMessage": str(e),
                 },
             })
