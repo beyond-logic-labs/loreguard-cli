@@ -55,6 +55,7 @@ class BackendTunnel:
         worker_token: str,
         model_id: str = "default",
         nli_service: Optional["NLIService"] = None,
+        log_callback: Callable[[str, str], None] | None = None,
     ):
         self.backend_url = backend_url
         self.llm_proxy = llm_proxy
@@ -62,6 +63,7 @@ class BackendTunnel:
         self.worker_token = worker_token
         self.model_id = model_id
         self.nli_service = nli_service
+        self.log_callback = log_callback
 
         self.ws: websockets.WebSocketClientProtocol | None = None
         self.connected = False
@@ -75,6 +77,20 @@ class BackendTunnel:
         # Callback for metrics (called after each request completes)
         # Signature: (npc_name: str, tokens: int, ttft_ms: float, total_ms: float) -> None
         self.on_request_complete: Callable[[str, int, float, float], None] | None = None
+
+    def _log(self, message: str, level: str = "info"):
+        """Log a message through callback or fallback to console."""
+        if self.log_callback:
+            self.log_callback(message, level)
+        else:
+            color_map = {
+                "info": "cyan",
+                "success": "green",
+                "error": "red",
+                "warn": "yellow",
+            }
+            color = color_map.get(level, "white")
+            console.print(f"[{color}]{message}[/{color}]")
 
     async def connect(self):
         """Establish and maintain connection to backend with auto-reconnect."""

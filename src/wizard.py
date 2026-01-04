@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Loreguard Wizard - Interactive terminal setup wizard.
 
-Arrow-key navigation, colorful UI, works on any terminal.
+Uses Rich for display and InquirerPy for interactive prompts.
 """
 
 import asyncio
@@ -14,20 +14,19 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
 
+from InquirerPy import inquirer
+from InquirerPy.base.control import Choice
+from InquirerPy.separator import Separator
+
 from .term_ui import (
-    Menu,
-    MenuItem,
-    InputField,
     ProgressDisplay,
-    StatusDisplay,
-    Colors,
-    supports_color,
-    show_cursor,
+    LiveStatusDisplay,
+    console,
     print_header,
     print_success,
     print_error,
     print_info,
-    check_for_cancel,
+    show_cursor,
 )
 
 # Logger instance - configured by main()
@@ -35,24 +34,14 @@ log = logging.getLogger("loreguard")
 
 
 def _configure_logging(verbose: bool = False) -> Optional[Path]:
-    """Configure logging level based on verbose flag.
-
-    Returns the log file path if verbose mode is enabled, None otherwise.
-
-    In verbose mode:
-    - DEBUG and above go to loreguard-debug.log
-    - WARNING and above still show in console
-    """
+    """Configure logging level based on verbose flag."""
     if verbose:
-        # Write to a log file to avoid corrupting the TUI
         log_file = Path.cwd() / "loreguard-debug.log"
 
-        # Clear any existing handlers
         root_logger = logging.getLogger()
         for handler in root_logger.handlers[:]:
             root_logger.removeHandler(handler)
 
-        # File handler for DEBUG and above
         file_handler = logging.FileHandler(log_file, mode='w')
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(logging.Formatter(
@@ -60,7 +49,6 @@ def _configure_logging(verbose: bool = False) -> Optional[Path]:
             datefmt="%H:%M:%S",
         ))
 
-        # Console handler for WARNING and above (won't corrupt TUI)
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.WARNING)
         console_handler.setFormatter(logging.Formatter("%(message)s"))
@@ -77,30 +65,17 @@ def _configure_logging(verbose: bool = False) -> Optional[Path]:
         return None
 
 
-def _c(color: str) -> str:
-    """Return color code if supported."""
-    return color if supports_color() else ""
-
-
 def print_banner():
-    """Print the startup banner."""
-    c = _c
-    banner = f"""
-{c(Colors.CYAN)}┌──────────────────────────────────────────────────────────────────────────────┐
-│                                                                              │
-│  {c(Colors.BRIGHT_CYAN)}██╗      ██████╗ ██████╗ ███████╗ {c(Colors.BRIGHT_MAGENTA)}██████╗ ██╗   ██╗ █████╗ ██████╗ ██████╗ {c(Colors.CYAN)} │
-│  {c(Colors.BRIGHT_CYAN)}██║     ██╔═══██╗██╔══██╗██╔════╝{c(Colors.BRIGHT_MAGENTA)}██╔════╝ ██║   ██║██╔══██╗██╔══██╗██╔══██╗{c(Colors.CYAN)} │
-│  {c(Colors.BRIGHT_CYAN)}██║     ██║   ██║██████╔╝█████╗  {c(Colors.BRIGHT_MAGENTA)}██║  ███╗██║   ██║███████║██████╔╝██║  ██║{c(Colors.CYAN)} │
-│  {c(Colors.BRIGHT_CYAN)}██║     ██║   ██║██╔══██╗██╔══╝  {c(Colors.BRIGHT_MAGENTA)}██║   ██║██║   ██║██╔══██║██╔══██╗██║  ██║{c(Colors.CYAN)} │
-│  {c(Colors.BRIGHT_CYAN)}███████╗╚██████╔╝██║  ██║███████╗{c(Colors.BRIGHT_MAGENTA)}╚██████╔╝╚██████╔╝██║  ██║██║  ██║██████╔╝{c(Colors.CYAN)} │
-│  {c(Colors.BRIGHT_CYAN)}╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝ {c(Colors.BRIGHT_MAGENTA)}╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ {c(Colors.CYAN)} │
-│                                                                              │
-│  {c(Colors.WHITE)}Local inference for your game NPCs{c(Colors.CYAN)}                                         │
-│  {c(Colors.GRAY)}loreguard.com{c(Colors.CYAN)}                                                                │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘{c(Colors.RESET)}
-"""
-    print(banner)
+    """Print the startup banner using Rich."""
+    console.print()
+    console.print("[bold cyan]" + "=" * 60 + "[/bold cyan]")
+    console.print()
+    console.print("  [bold bright_cyan]LORE[/bold bright_cyan][bold bright_magenta]GUARD[/bold bright_magenta]")
+    console.print("  [dim]Local inference for your game NPCs[/dim]")
+    console.print("  [dim]loreguard.com[/dim]")
+    console.print()
+    console.print("[bold cyan]" + "=" * 60 + "[/bold cyan]")
+    console.print()
 
 
 @dataclass
@@ -310,7 +285,7 @@ def _format_gpu_info(hardware: HardwareInfo) -> str:
         parts.append(f"{hardware.gpu_vram_gb:.1f} GB VRAM")
     if hardware.gpu_mem_type:
         parts.append(hardware.gpu_mem_type)
-    return " • ".join(parts)
+    return " | ".join(parts)
 
 
 def _is_shared_memory_gpu(hardware: HardwareInfo) -> bool:
@@ -350,16 +325,12 @@ def _classify_model_fit(model_size_gb: float, hardware: Optional[HardwareInfo]) 
 
 
 def _resolve_backend_model_id(filename_stem: str) -> str:
-    """Map local model filename to backend-accepted model ID.
-
-    Backend accepts specific model IDs like qwen3-4b, qwen3-8b, external.
-    We map the local model filename to the closest match.
-    """
+    """Map local model filename to backend-accepted model ID."""
     MODEL_MAPPINGS = {
         "qwen3-4b": "qwen3-4b",
         "qwen3-8b": "qwen3-8b",
         "qwen3-0.6b": "qwen3-0.6b",
-        "qwen3-1.7b": "qwen3-4b",  # Map to closest
+        "qwen3-1.7b": "qwen3-4b",
         "llama-3": "llama-3.1-8b",
         "mistral": "mistral-7b",
         "phi-3": "phi-3",
@@ -372,7 +343,6 @@ def _resolve_backend_model_id(filename_stem: str) -> str:
             log.debug(f"Model ID mapped: {search_str} -> {backend_id}")
             return backend_id
 
-    # Fallback to 'external' for custom/unknown models
     log.debug(f"Using 'external' model ID for: {search_str}")
     return "external"
 
@@ -387,41 +357,15 @@ def _suggest_model_id(models, hardware: Optional[HardwareInfo]) -> Optional[str]
     if ram is None:
         return None
     if ram >= 24:
-        preferred = [
-            "gpt-oss-20b",
-            "qwen3-8b",
-            "rnj-1-instruct",
-            "qwen3-4b-instruct",
-            "llama-3.2-3b-instruct",
-            "qwen3-1.7b",
-        ]
+        preferred = ["gpt-oss-20b", "qwen3-8b", "rnj-1-instruct", "qwen3-4b-instruct", "llama-3.2-3b-instruct", "qwen3-1.7b"]
     elif ram >= 16:
-        preferred = [
-            "qwen3-8b",
-            "rnj-1-instruct",
-            "qwen3-4b-instruct",
-            "llama-3.2-3b-instruct",
-            "qwen3-1.7b",
-        ]
+        preferred = ["qwen3-8b", "rnj-1-instruct", "qwen3-4b-instruct", "llama-3.2-3b-instruct", "qwen3-1.7b"]
     elif ram >= 12:
-        preferred = [
-            "qwen3-8b",
-            "rnj-1-instruct",
-            "qwen3-4b-instruct",
-            "llama-3.2-3b-instruct",
-            "qwen3-1.7b",
-        ]
+        preferred = ["qwen3-8b", "rnj-1-instruct", "qwen3-4b-instruct", "llama-3.2-3b-instruct", "qwen3-1.7b"]
     elif ram >= 8:
-        preferred = [
-            "qwen3-4b-instruct",
-            "llama-3.2-3b-instruct",
-            "qwen3-1.7b",
-        ]
+        preferred = ["qwen3-4b-instruct", "llama-3.2-3b-instruct", "qwen3-1.7b"]
     elif ram >= 6:
-        preferred = [
-            "llama-3.2-3b-instruct",
-            "qwen3-1.7b",
-        ]
+        preferred = ["llama-3.2-3b-instruct", "qwen3-1.7b"]
     else:
         preferred = ["qwen3-1.7b"]
 
@@ -443,45 +387,30 @@ def _suggest_model_id(models, hardware: Optional[HardwareInfo]) -> Optional[str]
 
 
 async def step_authentication() -> tuple[Optional[str], Optional[str], bool]:
-    """Step 1: Get and validate token.
-
-    Returns: (token, worker_id, dev_mode) or (None, None, False) if cancelled.
-    """
+    """Step 1: Get and validate token."""
     log.debug("Starting authentication step")
-    print_info("Step 1/3: Authentication")
+    print_info("Step 1/4: Authentication")
     print()
 
-    # First, ask how they want to authenticate
-    auth_menu = Menu(
-        items=[
-            MenuItem(
-                label="Paste token",
-                value="token",
-                description="Manually enter your API token",
-            ),
-            MenuItem(
-                label="Dev mode",
-                value="dev",
-                description="Test locally without backend connection",
-            ),
+    auth_choice = inquirer.select(
+        message="Choose an authentication method:",
+        choices=[
+            Choice(value="token", name="Paste token - Manually enter your API token"),
+            Choice(value="dev", name="Dev mode - Test locally without backend connection"),
         ],
-        title="Authentication",
-        prompt="Choose an authentication method:",
-    )
-
-    auth_choice = auth_menu.run()
+        default="token",
+        pointer=">"
+    ).execute()
 
     if auth_choice is None:
         return None, None, False
 
-    # Dev mode
-    if auth_choice.value == "dev":
+    if auth_choice == "dev":
         log.debug("User selected dev mode")
         print_success("Dev mode enabled (no backend connection)")
         print()
         return "dev_mock_token", "dev-worker", True
 
-    # Manual token entry
     log.debug("User selected token authentication")
     return await _auth_with_token()
 
@@ -491,29 +420,17 @@ async def _auth_with_token() -> tuple[Optional[str], Optional[str], bool]:
     import httpx
     import socket
 
-    def validate_token(value: str) -> Optional[str]:
-        if not value:
-            return "Token is required"
-        # Accept any non-empty token - server will validate
-        return None
+    token = inquirer.secret(
+        message="Enter your API token:",
+        validate=lambda x: len(x) > 0,
+        invalid_message="Token is required",
+    ).execute()
 
-    input_field = InputField(
-        prompt="Enter your API token:",
-        password=True,
-        validator=validate_token,
-    )
-
-    token = input_field.run(title="Paste Token")
-
-    if token is None:
+    if not token:
         return await step_authentication()
 
-    # Validate with server using /api/auth/me endpoint
     log.debug("Validating token with API server...")
-    log.debug("Token: %s...%s (len=%d)", token[:10] if token else "None", token[-4:] if token else "", len(token) if token else 0)
-    status = StatusDisplay(title="Validating Token", height=5)
-    status.set_line(0, "Status", "Connecting to server...")
-    status.draw()
+    console.print("[dim]Validating token...[/dim]")
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -523,45 +440,34 @@ async def _auth_with_token() -> tuple[Optional[str], Optional[str], bool]:
                 headers={"Authorization": f"Bearer {token}"},
             )
             log.debug(f"Auth response status: {response.status_code}")
-            status.clear()
 
             if response.status_code == 200:
                 data = response.json()
                 log.debug(f"Auth response: {data}")
-                # Use studio name or email as identifier for display
                 display_name = data.get("studio", {}).get("name") or data.get("email", "user")
                 log.debug(f"Authenticated as: {display_name}")
                 print_success(f"Authenticated as {display_name}")
                 print()
-                # Generate worker_id from hostname (sanitized - no dots allowed)
                 hostname = socket.gethostname() or "worker"
                 worker_id = hostname.split(".")[0].replace(" ", "-")
                 return token, worker_id, False
             else:
-                # Auth failed - show detailed error info
                 try:
                     error_data = response.json()
                     error_msg = error_data.get("error", response.text[:100])
                 except Exception:
                     error_msg = response.text[:100] if response.text else "Unknown error"
 
-                print_error(f"Authentication failed")
-                print_error(f"  URL: https://api.loreguard.com/api/auth/me")
-                print_error(f"  Status: {response.status_code}")
-                print_error(f"  Response: {error_msg}")
+                print_error(f"Authentication failed: {error_msg}")
                 print()
                 return await _auth_with_token()
 
     except httpx.ConnectError as e:
-        status.clear()
-        print_error("Cannot connect to server")
-        print_error(f"  URL: https://api.loreguard.com/api/auth/me")
-        print_error(f"  Error: {e}")
+        print_error(f"Cannot connect to server: {e}")
         print()
         return await _auth_with_token()
 
     except Exception as e:
-        status.clear()
         print_error(f"Error: {e}")
         print()
         return await _auth_with_token()
@@ -570,7 +476,7 @@ async def _auth_with_token() -> tuple[Optional[str], Optional[str], bool]:
 async def step_model_selection(hardware: Optional[HardwareInfo]) -> Optional[Path]:
     """Step 2: Select and optionally download a model."""
     log.debug("Starting model selection step")
-    print_info("Step 2/3: Model Selection")
+    print_info("Step 2/4: Model Selection")
     print()
 
     from .models_registry import SUPPORTED_MODELS
@@ -581,68 +487,61 @@ async def step_model_selection(hardware: Optional[HardwareInfo]) -> Optional[Pat
     suggested_id = _suggest_model_id(SUPPORTED_MODELS, hardware)
     log.debug(f"Suggested model ID: {suggested_id}")
 
-    # Check which models are installed
     installed_ids = set()
     for model in SUPPORTED_MODELS:
         if (models_dir / model.filename).exists():
             installed_ids.add(model.id)
     log.debug(f"Installed models: {installed_ids if installed_ids else 'none'}")
 
-    # Build menu items
-    items = []
+    # Build choices for InquirerPy
+    choices = []
     for model in SUPPORTED_MODELS:
+        # Build status tag
+        tags = []
         if model.id in installed_ids:
-            tag = "✓ installed"
+            tags.append("installed")
         else:
-            tag = f"{model.size_gb:.1f} GB"
+            tags.append(f"{model.size_gb:.1f} GB")
 
         fit = _classify_model_fit(model.size_gb, hardware) if hardware else "unknown"
-
         if model.id == suggested_id:
-            tag += " • suggested"
+            tags.append("suggested")
         if model.recommended:
-            tag += " • recommended"
+            tags.append("recommended")
         if model.experimental:
-            tag += " • experimental"
+            tags.append("experimental")
         if fit == "too_big":
-            tag += " • too big"
+            tags.append("too big")
         if fit == "ram_spill":
-            tag += " • RAM leak (slow)"
+            tags.append("slow")
 
-        # Show hardware requirements in description
-        desc = f"{model.hardware}"
+        tag_str = " | ".join(tags)
+        name = f"{model.name} [{tag_str}]"
 
-        items.append(MenuItem(
-            label=model.name,
-            value=model.id,
-            description=desc,
-            tag=tag,
-        ))
+        choices.append(Choice(value=model.id, name=name))
 
-    items.append(MenuItem(
-        label="Custom model path...",
-        value="__custom__",
-        description="Enter path to your own .gguf file",
-        tag="",
-    ))
+    choices.append(Separator())
+    choices.append(Choice(value="__custom__", name="Custom model path..."))
 
-    menu = Menu(
-        items=items,
-        title="Select Model",
-        prompt="Choose a model to use:",
-    )
-
-    selected = menu.run()
+    selected = inquirer.select(
+        message="Choose a model:",
+        choices=choices,
+        default=suggested_id if suggested_id else None,
+        pointer=">",
+    ).execute()
 
     if selected is None:
         return None
 
-    if selected.value == "__custom__":
-        input_field = InputField(prompt="Enter path to .gguf file:")
-        custom_path = input_field.run(title="Custom Model")
+    if selected == "__custom__":
+        custom_path = inquirer.filepath(
+            message="Enter path to .gguf file:",
+            validate=lambda x: Path(x).exists() or Path(x).expanduser().exists(),
+            invalid_message="File not found",
+        ).execute()
 
-        if custom_path is None:
-            return await step_model_selection()
+        if not custom_path:
+            return await step_model_selection(hardware)
 
         if custom_path.startswith("~"):
             custom_path = str(Path.home()) + custom_path[1:]
@@ -656,11 +555,11 @@ async def step_model_selection(hardware: Optional[HardwareInfo]) -> Optional[Pat
                 print_success(f"Found: {model_path.name}")
             else:
                 print_error("No .gguf files found in directory")
-                return await step_model_selection()
+                return await step_model_selection(hardware)
 
         if not model_path.exists():
             print_error(f"File not found: {model_path}")
-            return await step_model_selection()
+            return await step_model_selection(hardware)
 
         print_success(f"Using: {model_path.name}")
         print()
@@ -669,7 +568,7 @@ async def step_model_selection(hardware: Optional[HardwareInfo]) -> Optional[Pat
     # Find selected model
     model = None
     for m in SUPPORTED_MODELS:
-        if m.id == selected.value:
+        if m.id == selected:
             model = m
             break
 
@@ -686,7 +585,7 @@ async def step_model_selection(hardware: Optional[HardwareInfo]) -> Optional[Pat
         log.debug(f"Downloading model to {model_path}")
         model_path = await download_model(model, model_path)
         if model_path is None:
-            return await step_model_selection()
+            return await step_model_selection(hardware)
         log.debug(f"Download complete: {model_path}")
         print_success(f"Downloaded: {model.name}")
         print()
@@ -695,44 +594,45 @@ async def step_model_selection(hardware: Optional[HardwareInfo]) -> Optional[Pat
 
 
 async def step_nli_setup() -> bool:
-    """Step 3: NLI model setup for fact verification.
-
-    Returns True if NLI should be enabled, False otherwise.
-    """
+    """Step 3: NLI model setup for fact verification."""
     from .nli import is_nli_model_available, download_nli_model
 
-    c = _c
-    print_header("NLI Fact Verification")
-    print()
-    print(f"{c(Colors.WHITE)}NLI (Natural Language Inference) verifies NPC claims against their")
-    print(f"knowledge base. This prevents NPCs from making up facts.{c(Colors.RESET)}")
-    print()
-    print(f"{c(Colors.MUTED)}Model: RoBERTa Large MNLI (~1.4 GB)")
-    print(f"This runs locally on your machine for fast verification.{c(Colors.RESET)}")
+    print_info("Step 3/4: NLI Model Setup")
     print()
 
-    # Check if already downloaded
     if is_nli_model_available():
-        print_success("NLI model already downloaded")
+        print_success("NLI model ready: RoBERTa Large MNLI")
+        print()
         return True
 
-    # NLI is required for fact verification - download automatically
-    print()
-    print_info("Downloading NLI model from HuggingFace...")
-    print_info("This may take a few minutes on first run.")
+    console.print("[dim]NLI (Natural Language Inference) verifies NPC claims against their knowledge base.[/dim]")
+    console.print("[dim]Model: RoBERTa Large MNLI (~1.4 GB)[/dim]")
     print()
 
+    # Download with progress
+    progress = ProgressDisplay(
+        title="Downloading NLI Model",
+        total=100,
+        subtitle="RoBERTa Large MNLI from HuggingFace",
+    )
+
     try:
+        # Simple download without detailed progress (HuggingFace handles caching)
+        console.print("[dim]Downloading from HuggingFace Hub...[/dim]")
         success = download_nli_model()
+
         if success:
-            print_success("NLI model downloaded successfully")
+            print_success("NLI model downloaded: RoBERTa Large MNLI")
+            print()
             return True
         else:
             print_error("Failed to download NLI model")
             print_info("You can try again later by restarting the wizard")
+            print()
             return False
     except Exception as e:
         print_error(f"Download failed: {e}")
+        print()
         return False
 
 
@@ -740,28 +640,27 @@ async def run_local_chat(port: int = 8080) -> None:
     """Chat directly with llama-server (dev mode)."""
     import httpx
 
-    c = _c
-    print()
-    print(f"{c(Colors.CYAN)}{'─' * 60}{c(Colors.RESET)}")
-    print(f"{c(Colors.BRIGHT_MAGENTA)}  Local Chat (Dev Mode){c(Colors.RESET)}")
-    print(f"{c(Colors.MUTED)}  Chatting directly with llama-server on port {port}{c(Colors.RESET)}")
-    print(f"{c(Colors.CYAN)}{'─' * 60}{c(Colors.RESET)}")
-    print(f"{c(Colors.MUTED)}  Commands: /help /clear /quit{c(Colors.RESET)}")
-    print()
+    console.print()
+    console.rule("[bold magenta]Local Chat (Dev Mode)[/bold magenta]", style="cyan")
+    console.print(f"[dim]Chatting directly with llama-server on port {port}[/dim]")
+    console.print("[dim]Commands: /help /clear /quit[/dim]")
+    console.print()
 
     history = []
     base_url = f"http://127.0.0.1:{port}"
 
     while True:
         try:
-            user_input = input(f"{c(Colors.BRIGHT_GREEN)}You:{c(Colors.RESET)} ").strip()
+            user_input = inquirer.text(
+                message="You:",
+                mandatory=False,
+            ).execute()
         except (EOFError, KeyboardInterrupt):
             break
 
         if not user_input:
             continue
 
-        # Handle commands
         if user_input.startswith("/"):
             cmd = user_input.lower().strip()
 
@@ -769,66 +668,54 @@ async def run_local_chat(port: int = 8080) -> None:
                 break
 
             if cmd == "/help":
-                print()
-                print(f"{c(Colors.MUTED)}Available commands:{c(Colors.RESET)}")
-                print(f"  {c(Colors.CYAN)}/clear{c(Colors.RESET)}  - Clear conversation history")
-                print(f"  {c(Colors.CYAN)}/quit{c(Colors.RESET)}   - Exit chat")
-                print()
+                console.print()
+                console.print("[dim]Available commands:[/dim]")
+                console.print("  [cyan]/clear[/cyan]  - Clear conversation history")
+                console.print("  [cyan]/quit[/cyan]   - Exit chat")
+                console.print()
                 continue
 
             if cmd == "/clear":
                 history = []
-                print(f"{c(Colors.MUTED)}Conversation history cleared.{c(Colors.RESET)}")
-                print()
+                console.print("[dim]Conversation history cleared.[/dim]")
+                console.print()
                 continue
 
-            # Unknown command
-            print(f"{c(Colors.MUTED)}Unknown command. Type /help for available commands.{c(Colors.RESET)}")
+            console.print("[dim]Unknown command. Type /help for available commands.[/dim]")
             continue
 
         if user_input.lower() in ("quit", "exit"):
             break
 
-        # Build messages
         history.append({"role": "user", "content": user_input})
 
-        # Show thinking indicator
-        print(f"{c(Colors.MUTED)}  Thinking...{c(Colors.RESET)}", end="", flush=True)
+        with console.status("[dim]Thinking...[/dim]"):
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    response = await client.post(
+                        f"{base_url}/v1/chat/completions",
+                        json={
+                            "messages": history,
+                            "max_tokens": 512,
+                            "temperature": 0.7,
+                        },
+                    )
+                    response.raise_for_status()
+                    data = response.json()
 
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    f"{base_url}/v1/chat/completions",
-                    json={
-                        "messages": history,
-                        "max_tokens": 512,
-                        "temperature": 0.7,
-                    },
-                )
-                response.raise_for_status()
-                data = response.json()
+                assistant_msg = data["choices"][0]["message"]["content"]
+                history.append({"role": "assistant", "content": assistant_msg})
 
-            # Clear thinking indicator
-            print(f"\r{' ' * 30}\r", end="")
+                console.print(f"[cyan]Model:[/cyan] {assistant_msg}")
+                console.print()
 
-            # Extract response
-            assistant_msg = data["choices"][0]["message"]["content"]
-            history.append({"role": "assistant", "content": assistant_msg})
+                if len(history) > 20:
+                    history = history[-20:]
 
-            # Show response
-            print(f"{c(Colors.BRIGHT_CYAN)}Model:{c(Colors.RESET)} {assistant_msg}")
-            print()
-
-            # Keep history manageable
-            if len(history) > 20:
-                history = history[-20:]
-
-        except httpx.RequestError as e:
-            print(f"\r{' ' * 30}\r", end="")
-            print_error(f"Connection error: {e}")
-        except Exception as e:
-            print(f"\r{' ' * 30}\r", end="")
-            print_error(f"Error: {e}")
+            except httpx.RequestError as e:
+                print_error(f"Connection error: {e}")
+            except Exception as e:
+                print_error(f"Error: {e}")
 
     print()
     print_info("Local chat ended.")
@@ -840,7 +727,7 @@ class DownloadCancelled(Exception):
 
 
 async def download_model(model, dest: Path) -> Optional[Path]:
-    """Download a model with progress display. Returns None if cancelled."""
+    """Download a model with progress display."""
     import httpx
 
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -849,7 +736,6 @@ async def download_model(model, dest: Path) -> Optional[Path]:
         title=f"Downloading {model.name}",
         total=model.size_bytes or 1,
         subtitle=model.url,
-        footer="Esc to cancel",
     )
 
     try:
@@ -862,10 +748,6 @@ async def download_model(model, dest: Path) -> Optional[Path]:
 
                 with open(dest, "wb") as f:
                     async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
-                        # Check for cancel between chunks
-                        if check_for_cancel():
-                            raise DownloadCancelled()
-
                         f.write(chunk)
                         downloaded += len(chunk)
                         progress.update(
@@ -875,13 +757,6 @@ async def download_model(model, dest: Path) -> Optional[Path]:
 
         progress.clear()
         return dest
-
-    except DownloadCancelled:
-        progress.clear()
-        print_info("Download cancelled")
-        if dest.exists():
-            dest.unlink()
-        return None
 
     except Exception as e:
         progress.clear()
@@ -914,60 +789,55 @@ async def step_start(
         DownloadProgress,
     )
 
-    status = StatusDisplay(title="Loreguard", height=12)
+    # Use LiveStatusDisplay for startup
+    status = LiveStatusDisplay(title="Loreguard Starting")
+    status.start()
 
     # Download llama-server if needed
     if not is_llama_server_installed():
         log.debug("llama-server not installed, downloading...")
-        status.set_line(0, "llama-server", "Downloading...")
-        status.draw()
+        status.set_line("server", "llama-server", "Downloading...")
 
         try:
             def on_progress(msg: str, prog: DownloadProgress | None):
                 if prog:
-                    status.set_line(0, "llama-server", f"Downloading... {int(prog.percent)}%")
-                    status.draw()
+                    status.set_line("server", "llama-server", f"Downloading... {int(prog.percent)}%")
 
             await download_llama_server(on_progress)
-            status.set_line(0, "llama-server", "✓ Downloaded")
-            status.draw()
+            status.set_line("server", "llama-server", "Downloaded")
         except Exception as e:
-            status.clear()
+            status.stop()
             print_error(f"Failed to download llama-server: {e}")
             return 1
 
     # Start llama-server
     log.debug("Starting llama-server...")
-    status.set_line(0, "llama-server", "Starting...")
-    status.set_line(1, "Model", model_path.name)
-    status.draw()
+    status.set_line("server", "llama-server", "Starting...")
+    status.set_line("model", "Model", model_path.name)
 
     llama = LlamaServerProcess(model_path, port=8080)
     log.debug(f"llama-server command: {llama}")
     llama.start()
 
     log.debug("Waiting for llama-server to load model...")
-    status.set_line(0, "llama-server", "Loading model...")
-    status.draw()
+    status.set_line("server", "llama-server", "Loading model...")
 
     ready = await llama.wait_for_ready(timeout=120.0)
     if not ready:
         log.debug("llama-server failed to start (timeout after 120s)")
-        status.clear()
+        status.stop()
         print_error("llama-server failed to start (timeout)")
         llama.stop()
         return 1
 
     log.debug("llama-server is ready on port 8080")
-    status.set_line(0, "llama-server", "✓ Running on port 8080")
-    status.draw()
+    status.set_line("server", "llama-server", "Running on port 8080")
 
     # Connect to backend (unless dev mode)
     tunnel = None
     if not dev_mode:
         log.debug("Connecting to backend...")
-        status.set_line(2, "Backend", "Connecting...")
-        status.draw()
+        status.set_line("backend", "Backend", "Connecting...")
 
         try:
             from .tunnel import BackendTunnel
@@ -976,23 +846,19 @@ async def step_start(
             llm_proxy = LLMProxy("http://127.0.0.1:8080")
             log.debug(f"LLM proxy configured for http://127.0.0.1:8080")
 
-            # Initialize NLI service if enabled
             nli_service = None
             if nli_enabled:
                 from .nli import NLIService
-                status.set_line(3, "NLI", "Loading model...")
-                status.draw()
+                status.set_line("nli", "NLI", "Loading model...")
                 nli_service = NLIService()
                 if nli_service.load_model():
                     log.debug(f"NLI service loaded (device: {nli_service.device})")
-                    status.set_line(3, "NLI", f"✓ Ready ({nli_service.device})")
+                    status.set_line("nli", "NLI", f"Ready ({nli_service.device})")
                 else:
                     log.debug("NLI service failed to load")
-                    status.set_line(3, "NLI", "✗ Failed to load")
+                    status.set_line("nli", "NLI", "Failed to load")
                     nli_service = None
-                status.draw()
 
-            # Map model filename to backend-accepted model ID
             model_id = _resolve_backend_model_id(model_path.stem)
 
             tunnel = BackendTunnel(
@@ -1009,56 +875,37 @@ async def step_start(
             await asyncio.sleep(2)
 
             log.debug("Backend connection established")
-            status.set_line(2, "Backend", "✓ Connected")
+            status.set_line("backend", "Backend", "Connected")
         except Exception as e:
             log.debug(f"Backend connection failed: {e}")
-            status.set_line(2, "Backend", f"✗ Failed: {e}")
-            status.set_line(3, "", "  (local-only mode)")
+            status.set_line("backend", "Backend", f"Failed: {e}")
     else:
-        status.set_line(2, "Mode", "Dev (local only)")
-        status.set_line(3, "API", "http://localhost:8080")
+        status.set_line("mode", "Mode", "Dev (local only)")
+        status.set_line("api", "API", "http://localhost:8080")
 
-    status.clear()
+    status.stop()
 
-    # Build menu options based on mode
+    # Ask what to do next
     if dev_mode:
-        menu_items = [
-            MenuItem(
-                label="Chat locally",
-                value="local_chat",
-                description="Chat directly with llama-server (raw model)",
-            ),
-            MenuItem(
-                label="Monitor llama-server",
-                value="server",
-                description="View stats at http://localhost:8080",
-            ),
+        choices = [
+            Choice(value="local_chat", name="Chat locally - Chat directly with llama-server"),
+            Choice(value="server", name="Monitor llama-server - View stats at http://localhost:8080"),
         ]
-        prompt_text = "llama-server is ready. Dev mode (local only)."
+        message = "llama-server is ready. What would you like to do?"
     else:
-        menu_items = [
-            MenuItem(
-                label="Chat with NPC",
-                value="chat",
-                description="Interactive chat using Loreguard API",
-            ),
-            MenuItem(
-                label="Monitor worker",
-                value="server",
-                description="View stats and wait for inference requests",
-            ),
+        choices = [
+            Choice(value="chat", name="Chat with NPC - Interactive chat using Loreguard API"),
+            Choice(value="server", name="Monitor worker - View stats and wait for requests"),
         ]
-        prompt_text = "llama-server is ready. Your worker is connected to Loreguard."
+        message = "Worker is connected to Loreguard. What would you like to do?"
 
-    mode_menu = Menu(
-        items=menu_items,
-        title="What would you like to do?",
-        prompt=prompt_text,
-    )
+    mode_choice = inquirer.select(
+        message=message,
+        choices=choices,
+        pointer=">",
+    ).execute()
 
-    mode_choice = mode_menu.run()
-
-    if mode_choice and mode_choice.value == "chat":
+    if mode_choice == "chat":
         from .npc_chat import run_npc_chat
 
         try:
@@ -1066,7 +913,6 @@ async def step_start(
         except KeyboardInterrupt:
             pass
 
-        # After chat, cleanup
         if tunnel:
             try:
                 await tunnel.disconnect()
@@ -1076,29 +922,27 @@ async def step_start(
         print_success("Goodbye!")
         return 0
 
-    if mode_choice and mode_choice.value == "local_chat":
-        # Local chat with llama-server directly
+    if mode_choice == "local_chat":
         await run_local_chat(port=8080)
         llama.stop()
         print_success("Goodbye!")
         return 0
 
-    # Running state (server mode)
-    status = StatusDisplay(title="Loreguard Running", height=12)
-    status.set_line(0, "llama-server", "✓ Running on port 8080")
-    status.set_line(1, "Model", model_path.name)
+    # Running state (server mode) - use LiveStatusDisplay
+    live_status = LiveStatusDisplay(title="Loreguard Running")
+    live_status.set_line("server", "llama-server", "Running on port 8080")
+    live_status.set_line("model", "Model", model_path.name)
     if dev_mode:
-        status.set_line(2, "Mode", "Dev (local only)")
-        status.set_line(3, "API", "http://localhost:8080")
+        live_status.set_line("mode", "Mode", "Dev (local only)")
+        live_status.set_line("api", "API", "http://localhost:8080")
     elif tunnel:
-        status.set_line(2, "Backend", "✓ Connected")
-    status.set_line(4, "", "")
-    status.set_line(5, "Requests", "0")
-    status.set_line(6, "Tokens", "0")
-    status.set_footer("Ctrl+C to stop")
-    status.draw()
+        live_status.set_line("backend", "Backend", "Connected")
+    live_status.set_line("spacer", "", "")
+    live_status.set_line("requests", "Requests", "0")
+    live_status.set_line("tokens", "Tokens", "0")
+    live_status.set_footer("Ctrl+C to stop")
+    live_status.start()
 
-    # Metrics tracking
     request_count = [0]
     total_tokens = [0]
 
@@ -1106,15 +950,15 @@ async def step_start(
         request_count[0] += 1
         total_tokens[0] += tokens
         tps = (tokens / total_ms * 1000) if total_ms > 0 else 0
-        status.set_line(5, "Requests", str(request_count[0]))
-        status.set_line(6, "Tokens", f"{total_tokens[0]:,}")
-        status.set_line(7, "Last", f"{npc} • {tokens} tok • {tps:.1f} tk/s")
-        status.draw()
+        live_status.set_line("requests", "Requests", str(request_count[0]))
+        live_status.set_line("tokens", "Tokens", f"{total_tokens[0]:,}")
+        live_status.set_line("last", "Last", f"{npc} | {tokens} tok | {tps:.1f} tk/s")
+        live_status.log(f"{npc}: {tokens} tokens @ {tps:.1f} tk/s", "success")
 
     if tunnel:
         tunnel.on_request_complete = on_request
+        tunnel.log_callback = live_status.log
 
-    # Wait for shutdown
     running = True
 
     def handle_signal(sig, frame):
@@ -1130,11 +974,9 @@ async def step_start(
     except KeyboardInterrupt:
         pass
 
-    # Cleanup
-    status.set_title("Shutting Down")
-    status.set_line(0, "llama-server", "Stopping...")
-    status.set_footer("")
-    status.draw()
+    live_status.set_title("Shutting Down")
+    live_status.set_line("server", "llama-server", "Stopping...")
+    live_status.set_footer("")
 
     llama.stop()
 
@@ -1144,7 +986,7 @@ async def step_start(
         except:
             pass
 
-    status.clear()
+    live_status.stop()
     print_success("Goodbye!")
     print()
     return 0
@@ -1156,8 +998,9 @@ async def run_wizard() -> int:
         print_banner()
         hardware = detect_hardware()
         print_info(
-            "Detected hardware: "
-            f"CPU {hardware.cpu} • RAM {_format_ram_gb(hardware.ram_gb)} • GPU {_format_gpu_info(hardware)}"
+            f"Detected hardware: CPU {hardware.cpu} | "
+            f"RAM {_format_ram_gb(hardware.ram_gb)} | "
+            f"GPU {_format_gpu_info(hardware)}"
         )
         print()
 
@@ -1173,7 +1016,7 @@ async def run_wizard() -> int:
             print_error("Cancelled")
             return 1
 
-        # Step 3: NLI Setup (optional)
+        # Step 3: NLI Setup
         nli_enabled = await step_nli_setup()
 
         # Step 4: Start
