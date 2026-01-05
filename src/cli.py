@@ -370,7 +370,7 @@ Available model IDs:
     parser.add_argument(
         "-v", "--verbose",
         action="store_true",
-        help="Enable debug logging",
+        help="Enable debug logging and show pipeline pass updates (in wizard mode)",
     )
     parser.add_argument(
         "--dev",
@@ -400,7 +400,9 @@ Available model IDs:
 
         from .npc_chat import run_npc_chat
         try:
-            asyncio.run(run_npc_chat(api_token=args.token))
+            # Note: verbose mode without tunnel will request pass updates
+            # but won't display them (no WebSocket connection in chat mode)
+            asyncio.run(run_npc_chat(api_token=args.token, verbose=args.verbose))
         except KeyboardInterrupt:
             pass
         sys.exit(0)

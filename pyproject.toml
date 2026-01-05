@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "loreguard-cli"
-version = "0.5.0"
+version = "0.6.0"
 description = "Local inference client for Loreguard NPCs"
 readme = "README.md"
 license = "MIT"
@@ -27,6 +27,7 @@ dependencies = [
     "pydantic>=2.5.0",
     "aiofiles>=24.1.0",
     "rich>=13.0.0",
+    "textual>=0.47.0",
     "transformers>=4.36.0",
     "torch>=2.0.0",
 ]

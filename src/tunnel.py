@@ -55,6 +55,8 @@ class BackendTunnel:
         worker_token: str,
         model_id: str = "default",
         nli_service: Optional["NLIService"] = None,
+        log_callback: Callable[[str, str], None] | None = None,
+        max_retries: int = -1,  # -1 = infinite retries, 0 = no retries (single try)
     ):
         self.backend_url = backend_url
         self.llm_proxy = llm_proxy
@@ -62,6 +64,8 @@ class BackendTunnel:
         self.worker_token = worker_token
         self.model_id = model_id
         self.nli_service = nli_service
+        self.log_callback = log_callback
+        self.max_retries = max_retries
 
         self.ws: websockets.WebSocketClientProtocol | None = None
         self.connected = False
@@ -71,44 +75,111 @@ class BackendTunnel:
         self._running = True
         self._shutdown_requested = False
         self._heartbeat_task: asyncio.Task | None = None
+        self._retry_count = 0
 
         # Callback for metrics (called after each request completes)
         # Signature: (npc_name: str, tokens: int, ttft_ms: float, total_ms: float) -> None
         self.on_request_complete: Callable[[str, int, float, float], None] | None = None
 
+        # Callback for verbose pass updates (called when backend sends pass_update)
+        # Signature: (payload: dict) -> None
+        self.on_pass_update: Callable[[dict], None] | None = None
+
+    def _log(self, message: str, level: str = "info"):
+        """Log a message through callback or fallback to console."""
+        if self.log_callback:
+            self.log_callback(message, level)
+        else:
+            color_map = {
+                "info": "cyan",
+                "success": "green",
+                "error": "red",
+                "warn": "yellow",
+            }
+            color = color_map.get(level, "white")
+            console.print(f"[{color}]{message}[/{color}]")
+
     async def connect(self):
         """Establish and maintain connection to backend with auto-reconnect."""
         if not self.worker_id or not self.worker_token:
-            console.print("[red]Error: Worker ID and API token are required[/red]")
-            console.print("[yellow]Get an API token from loreguard.com dashboard[/yellow]")
+            self._log("Error: Worker ID and API token are required", "error")
+            self._log("Get an API token from loreguard.com dashboard", "warn")
             return
+
+        last_error = ""
 
         while self._running:
             try:
                 await self._connect_once()
+                last_error = ""  # Clear on successful connection
             except websockets.exceptions.InvalidStatus as e:
                 # Server rejected connection (e.g., 401, 500)
                 logger.error("WebSocket connection rejected: HTTP %s", e.response.status_code)
-                console.print(f"[red]Connection rejected: HTTP {e.response.status_code}[/red]")
-                if e.response.status_code == 401:
-                    console.print("[yellow]  → Invalid or expired token[/yellow]")
+
+                # Try to get error body
+                error_body = ""
+                try:
+                    if hasattr(e.response, 'body') and e.response.body:
+                        error_body = e.response.body.decode('utf-8', errors='ignore')
+                    elif hasattr(e.response, 'read'):
+                        error_body = e.response.read().decode('utf-8', errors='ignore')
+                except Exception:
+                    pass
+
+                if error_body:
+                    last_error = f"HTTP {e.response.status_code}: {error_body[:150]}"
+                elif e.response.status_code == 401:
+                    last_error = "HTTP 401: Invalid or expired token"
                 elif e.response.status_code >= 500:
-                    console.print("[yellow]  → Server error (backend may be down)[/yellow]")
+                    last_error = f"HTTP {e.response.status_code}: Server error"
+                else:
+                    last_error = f"HTTP {e.response.status_code}"
+
+                self._log(last_error, "error")
+
+            except websockets.exceptions.InvalidURI as e:
+                logger.error("Invalid WebSocket URI: %s", e)
+                last_error = f"Invalid backend URL: {e}"
+                self._log(last_error, "error")
+            except websockets.exceptions.InvalidHandshake as e:
+                logger.error("WebSocket handshake failed: %s", e)
+                last_error = f"Handshake failed: {e}"
+                self._log(last_error, "error")
+            except ConnectionRefusedError as e:
+                logger.error("Connection refused: %s", e)
+                last_error = "Connection refused - backend unreachable"
+                self._log(last_error, "error")
+            except OSError as e:
+                logger.error("Network error: %s", e)
+                last_error = f"Network error: {e}"
+                self._log(last_error, "error")
             except Exception as e:
-                logger.error("Connection error: %s", e)
-                console.print(f"[red]Connection error: {e}[/red]")
+                logger.error("Connection error: %s (%s)", e, type(e).__name__)
+                last_error = f"{type(e).__name__}: {e}"
+                self._log(last_error, "error")
 
             if not self._running:
                 break
 
+            # Check retry limit
+            self._retry_count += 1
+            if self.max_retries >= 0 and self._retry_count > self.max_retries:
+                # Show the actual error, not just "Connection failed"
+                if last_error:
+                    self._log(f"Connection failed: {last_error}", "error")
+                else:
+                    self._log("Connection failed", "error")
+                self._running = False
+                break
+
             # Exponential backoff for reconnection
-            console.print(f"[yellow]Reconnecting in {self._reconnect_delay}s...[/yellow]")
+            self._log(f"Reconnecting in {self._reconnect_delay}s... ({last_error})", "warn")
             await asyncio.sleep(self._reconnect_delay)
             self._reconnect_delay = min(self._reconnect_delay * 2, self._max_reconnect_delay)
 
     async def _connect_once(self):
         """Single connection attempt."""
-        console.print(f"[yellow]Connecting to {self.backend_url}...[/yellow]")
+        self._log(f"Connecting to {self.backend_url}...", "warn")
 
         self.ws = await websockets.connect(
             self.backend_url,
@@ -117,16 +188,16 @@ class BackendTunnel:
             ping_timeout=10,
         )
         self.connected = True
-        self._reconnect_delay = 1  # Reset on successful connection
-        console.print("[green]Connected to backend![/green]")
+        connection_start = time.time()
+        self._log("Connected to backend!", "success")
 
         # Register as worker
-        success = await self._register_worker()
+        success, error_reason = await self._register_worker()
         if not success:
-            console.print("[red]Worker registration failed[/red]")
             await self.ws.close()
             self.connected = False
-            return
+            # Raise to trigger error handling in connect() with the reason
+            raise Exception(f"Registration failed: {error_reason}")
 
         # Start heartbeat
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -135,6 +206,11 @@ class BackendTunnel:
         try:
             await self._handle_messages()
         finally:
+            # Only reset reconnect delay if we were connected for at least 30 seconds
+            # This prevents rapid reconnection loops when connection drops immediately
+            if time.time() - connection_start > 30:
+                self._reconnect_delay = 1
+
             if self._heartbeat_task:
                 self._heartbeat_task.cancel()
                 try:
@@ -142,10 +218,14 @@ class BackendTunnel:
                 except asyncio.CancelledError:
                     pass
 
-    async def _register_worker(self) -> bool:
-        """Register as a worker with authentication."""
+    async def _register_worker(self) -> tuple[bool, str]:
+        """Register as a worker with authentication.
+
+        Returns:
+            Tuple of (success, error_reason)
+        """
         if not self.ws:
-            return False
+            return False, "No WebSocket connection"
 
         # Use the configured model_id (already mapped to backend-accepted ID)
         # Don't override with LLM server's model name (it returns filenames like Qwen3-4B-Instruct.gguf)
@@ -155,7 +235,7 @@ class BackendTunnel:
         capabilities = ["chat", "completion"]
         if self.nli_service is not None and self.nli_service.is_loaded:
             capabilities.append("nli")
-            console.print("[cyan]NLI capability enabled[/cyan]")
+            self._log("NLI capability enabled", "info")
 
         # Build registration message
         register_msg = {
@@ -178,7 +258,7 @@ class BackendTunnel:
         }
 
         await self.ws.send(json.dumps(register_msg))
-        console.print("[cyan]Registration sent, waiting for ACK...[/cyan]")
+        self._log("Registration sent, waiting for ACK...", "info")
 
         # Wait for registration ACK
         try:
@@ -189,23 +269,25 @@ class BackendTunnel:
                 payload = data.get("payload", {})
                 if payload.get("accepted"):
                     self.registered = True
-                    console.print(f"[green]Registered as worker: {self.worker_id}[/green]")
-                    return True
+                    self._log(f"Registered as worker: {self.worker_id}", "success")
+                    return True, ""
                 else:
                     reason = payload.get("reason", "unknown")
-                    console.print(f"[red]Registration rejected: {reason}[/red]")
-                    return False
+                    self._log(f"Registration rejected: {reason}", "error")
+                    return False, reason
             elif data.get("type") == "error":
                 error = data.get("payload", {})
-                console.print(f"[red]Registration error: {error.get('message', 'unknown')}[/red]")
-                return False
+                msg = error.get("message", "unknown")
+                self._log(f"Registration error: {msg}", "error")
+                return False, msg
             else:
-                console.print(f"[yellow]Unexpected response: {data.get('type')}[/yellow]")
-                return False
+                msg = f"Unexpected response type: {data.get('type')}"
+                self._log(msg, "warn")
+                return False, msg
 
         except asyncio.TimeoutError:
-            console.print("[red]Registration timeout[/red]")
-            return False
+            self._log("Registration timeout", "error")
+            return False, "Registration timeout (no response from server)"
 
     async def _heartbeat_loop(self):
         """Send periodic heartbeats to keep connection alive."""
@@ -264,7 +346,7 @@ class BackendTunnel:
             self.connected = False
             self.registered = False
 
-        console.print("[yellow]Disconnected from backend[/yellow]")
+        self._log("Disconnected from backend", "warn")
 
     async def _handle_messages(self):
         """Handle incoming messages from backend."""
@@ -276,16 +358,16 @@ class BackendTunnel:
                     data = json.loads(message)
                     await self._process_message(data)
                 except json.JSONDecodeError:
-                    console.print("[red]Invalid JSON received[/red]")
+                    self._log("Invalid JSON received", "error")
                 except Exception as e:
                     logger.exception("Error processing message")
-                    console.print(f"[red]Error processing message: {e}[/red]")
+                    self._log(f"Error processing message: {e}", "error")
 
         except asyncio.CancelledError:
             logger.info("Message handler cancelled")
             raise
         except websockets.ConnectionClosed as e:
-            console.print(f"[yellow]Connection closed: {e.reason}[/yellow]")
+            self._log(f"Connection closed: {e.reason}", "warn")
             self.connected = False
             self.registered = False
 
@@ -320,16 +402,22 @@ class BackendTunnel:
             # Request to cancel in-flight request
             payload = data.get("payload", {})
             request_id = payload.get("requestId")
-            console.print(f"[yellow]Cancel request: {request_id}[/yellow]")
+            self._log(f"Cancel request: {request_id}", "warn")
             # TODO: Implement request cancellation
 
         elif msg_type == "error":
             payload = data.get("payload", {})
-            console.print(f"[red]Backend error: {payload.get('message')}[/red]")
+            self._log(f"Backend error: {payload.get('message')}", "error")
 
         elif msg_type == "server_notify":
             payload = data.get("payload", {})
-            console.print(f"[cyan]Server notification: {payload}[/cyan]")
+            self._log(f"Server notification: {payload}", "info")
+
+        elif msg_type == "pass_update":
+            # Pipeline pass update (verbose mode)
+            payload = data.get("payload", {})
+            if self.on_pass_update:
+                self.on_pass_update(payload)
 
         else:
             logger.debug(f"Unknown message type: {msg_type}")
@@ -341,10 +429,10 @@ class BackendTunnel:
         trace_id = data.get("traceId", "")
 
         if not request_id:
-            console.print("[red]Intent request missing requestId[/red]")
+            self._log("Intent request missing requestId", "error")
             return
 
-        console.print(f"[cyan]Intent request {request_id[:8]}...[/cyan]")
+        self._log(f"Intent request {request_id[:8]}...", "info")
         start_time = time.time()
 
         try:
@@ -375,7 +463,7 @@ class BackendTunnel:
             }
 
             await self._send(response)
-            console.print(f"[green]Response sent for {request_id[:8]}... ({generation_ms}ms)[/green]")
+            self._log(f"Response sent for {request_id[:8]}... ({generation_ms}ms)", "success")
 
             # Emit metrics callback
             if self.on_request_complete:
@@ -388,7 +476,7 @@ class BackendTunnel:
 
         except Exception as e:
             logger.exception("Intent handling error")
-            console.print(f"[red]Intent error: {e}[/red]")
+            self._log(f"Intent error: {e}", "error")
 
             # Send error response
             await self._send({
@@ -413,7 +501,7 @@ class BackendTunnel:
         trace_id = data.get("traceId", "")
 
         if not request_id:
-            console.print("[red]NLI request missing requestId[/red]")
+            self._log("NLI request missing requestId", "error")
             return
 
         if not self.nli_service:
@@ -435,7 +523,7 @@ class BackendTunnel:
         claim = payload.get("claim", "")
         evidence = payload.get("evidence", "")
 
-        console.print(f"[cyan]NLI request {request_id[:8]}...[/cyan]")
+        self._log(f"NLI request {request_id[:8]}...", "info")
         start_time = time.time()
 
         try:
@@ -460,11 +548,11 @@ class BackendTunnel:
                     "latencyMs": latency_ms,
                 },
             })
-            console.print(f"[green]NLI response sent: {result.entailment.value} ({latency_ms}ms)[/green]")
+            self._log(f"NLI response sent: {result.entailment.value} ({latency_ms}ms)", "success")
 
         except Exception as e:
             logger.exception("NLI handling error")
-            console.print(f"[red]NLI error: {e}[/red]")
+            self._log(f"NLI error: {e}", "error")
 
             await self._send({
                 "id": self._generate_message_id(),
@@ -487,7 +575,7 @@ class BackendTunnel:
         trace_id = data.get("traceId", "")
 
         if not request_id:
-            console.print("[red]NLI batch request missing requestId[/red]")
+            self._log("NLI batch request missing requestId", "error")
             return
 
         if not self.nli_service:
@@ -507,7 +595,7 @@ class BackendTunnel:
             return
 
         claims = payload.get("claims", [])
-        console.print(f"[cyan]NLI batch request {request_id[:8]}... ({len(claims)} pairs)[/cyan]")
+        self._log(f"NLI batch request {request_id[:8]}... ({len(claims)} pairs)", "info")
         start_time = time.time()
 
         try:
@@ -541,11 +629,11 @@ class BackendTunnel:
                     "latencyMs": latency_ms,
                 },
             })
-            console.print(f"[green]NLI batch response sent: {len(results)} results ({latency_ms}ms)[/green]")
+            self._log(f"NLI batch response sent: {len(results)} results ({latency_ms}ms)", "success")
 
         except Exception as e:
             logger.exception("NLI batch handling error")
-            console.print(f"[red]NLI batch error: {e}[/red]")
+            self._log(f"NLI batch error: {e}", "error")
 
             await self._send({
                 "id": self._generate_message_id(),

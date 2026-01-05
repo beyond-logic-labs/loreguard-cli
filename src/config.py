@@ -1,15 +1,105 @@
 """Configuration for Loreguard Client.
 
 Simple configuration loader from environment variables.
+Also supports persistent file-based configuration for the TUI.
 """
 
+import json
 import os
+import platform
+from dataclasses import dataclass, asdict
 from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 from rich.console import Console
 
 console = Console()
+
+
+# =============================================================================
+# Persistent Configuration (File-based)
+# =============================================================================
+
+def get_data_dir() -> Path:
+    """Get the data directory for loreguard."""
+    if platform.system() == "Windows":
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    elif platform.system() == "Darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+
+    data_dir = base / "loreguard"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir
+
+
+def get_config_path() -> Path:
+    """Get the path to the config file."""
+    return get_data_dir() / "config.json"
+
+
+@dataclass
+class LoreguardConfig:
+    """Loreguard client persistent configuration."""
+    api_token: str = ""
+    model_path: str = ""  # Store as string for JSON serialization
+    dev_mode: bool = False
+
+    def save(self) -> None:
+        """Save configuration to disk."""
+        config_path = get_config_path()
+        with open(config_path, "w") as f:
+            json.dump(asdict(self), f, indent=2)
+
+    @classmethod
+    def load(cls) -> "LoreguardConfig":
+        """Load configuration from disk."""
+        config_path = get_config_path()
+        if config_path.exists():
+            try:
+                with open(config_path, "r") as f:
+                    data = json.load(f)
+                return cls(
+                    api_token=data.get("api_token", ""),
+                    model_path=data.get("model_path", ""),
+                    dev_mode=data.get("dev_mode", False),
+                )
+            except (json.JSONDecodeError, KeyError):
+                pass
+        return cls()
+
+    def get_model_path_obj(self) -> Optional[Path]:
+        """Get the model path as a Path object."""
+        if self.model_path:
+            path = Path(self.model_path)
+            if path.exists():
+                return path
+        return None
+
+    def set_model_path(self, path: Optional[Path]) -> None:
+        """Set the model path."""
+        self.model_path = str(path) if path else ""
+
+    def has_saved_config(self) -> bool:
+        """Check if we have a saved configuration with token and model."""
+        return bool(self.api_token and self.model_path and Path(self.model_path).exists())
+
+    def clear_token(self) -> None:
+        """Clear the saved token."""
+        self.api_token = ""
+        self.save()
+
+    def clear_model(self) -> None:
+        """Clear the saved model."""
+        self.model_path = ""
+        self.save()
+
+
+# =============================================================================
+# Environment Variable Configuration
+# =============================================================================
 
 
 @lru_cache(maxsize=1)
@@ -20,7 +110,6 @@ def load_config() -> dict:
     Returns:
         dict with configuration values
     """
-    console.print("[yellow]Loading config from environment variables[/yellow]")
     return {
         # Server settings
         "LLM_ENDPOINT": os.getenv("LLM_ENDPOINT", "http://localhost:8080"),
