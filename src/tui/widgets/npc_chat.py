@@ -55,11 +55,15 @@ class NPCChat(Vertical):
         height: 1fr;
         padding: 0 1;
         background: transparent;
+        overflow-x: hidden;
+        overflow-y: auto;
     }}
 
     NPCChat .chat-message {{
         padding: 0;
         margin: 0;
+        width: 100%;
+        overflow: hidden;
     }}
 
     NPCChat Input {{
