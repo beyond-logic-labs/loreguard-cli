@@ -187,16 +187,21 @@ class LoreguardClient:
         history: list[ChatMessage] = None,
         player_id: str = "cli_user",
         context: str = "",
+        verbose: bool = False,
     ) -> dict:
         """Send a chat message to an NPC and get response.
 
         Returns the full API response with speech, thoughts, citations, etc.
+
+        Args:
+            verbose: If True, backend streams pass_update messages via WebSocket
         """
         logger.debug(
-            "Chat request: character=%s, message_len=%d, history_len=%d",
+            "Chat request: character=%s, message_len=%d, history_len=%d, verbose=%s",
             character_id,
             len(message),
             len(history) if history else 0,
+            verbose,
         )
 
         history_data = []
@@ -211,6 +216,8 @@ class LoreguardClient:
         }
         if context:
             payload["current_context"] = context
+        if verbose:
+            payload["verbose"] = True
 
         async with httpx.AsyncClient(timeout=self._get_timeout(for_chat=True)) as client:
             response = await client.post(
@@ -245,6 +252,8 @@ class NPCChat:
         player_jwt: Optional[str] = None,
         base_url: str = LOREGUARD_API_URL,
         config: Optional[ClientConfig] = None,
+        verbose: bool = False,
+        tunnel=None,  # BackendTunnel for receiving pass_update messages
     ):
         self.client = LoreguardClient(
             api_token=api_token,
@@ -255,6 +264,101 @@ class NPCChat:
         self.current_npc: Optional[NPCCharacter] = None
         self.history: list[ChatMessage] = []
         self.use_color = supports_color()
+        self.verbose = verbose
+        self.tunnel = tunnel
+
+        # Wire up pass_update callback if verbose mode and tunnel available
+        if self.verbose and self.tunnel:
+            self.tunnel.on_pass_update = self._on_pass_update
+
+    def _on_pass_update(self, payload: dict):
+        """Handle pass_update message from backend (verbose mode)."""
+        c = self._c
+        pass_num = payload.get("pass", "?")
+        name = payload.get("name", "Unknown")
+        duration = payload.get("durationMs", 0)
+        skipped = payload.get("skipped", False)
+        error = payload.get("error", False)
+        retry_of = payload.get("retryOf", 0)
+
+        # Format pass header
+        retry_suffix = f" (Retry {retry_of})" if retry_of > 0 else ""
+        if skipped:
+            print(f"\n{c(Colors.MUTED)}[Pass {pass_num}] {name}: Skipped{c(Colors.RESET)}")
+            return
+        if error:
+            print(f"\n{c(Colors.RED)}[Pass {pass_num}] {name}: Error{retry_suffix}{c(Colors.RESET)}")
+            if error_msg := payload.get("errorMsg"):
+                print(f"  {c(Colors.RED)}{error_msg}{c(Colors.RESET)}")
+            return
+
+        print(f"\n{c(Colors.CYAN)}[Pass {pass_num}] {name} ({duration}ms){retry_suffix}{c(Colors.RESET)}")
+
+        # Query rewrite (Pass 1)
+        if query_rewrite := payload.get("queryRewrite"):
+            print(f"  {c(Colors.LABEL)}Query rewrite:{c(Colors.RESET)} {query_rewrite}")
+
+        # Sources (Pass 1)
+        if sources := payload.get("sources"):
+            print(f"  {c(Colors.LABEL)}Sources retrieved ({len(sources)}):{c(Colors.RESET)}")
+            for src in sources:
+                score = src.get("score", 0)
+                path = src.get("path", "")
+                src_type = src.get("type", "")
+                src_id = src.get("id", "?")
+                print(f"    [{src_id}] {path} {c(Colors.MUTED)}(score: {score:.2f}, {src_type}){c(Colors.RESET)}")
+
+        # Evidence blocks (Pass 4) - show what citations map to
+        if evidence_blocks := payload.get("evidenceBlocks"):
+            print(f"  {c(Colors.LABEL)}Evidence blocks ({len(evidence_blocks)}):{c(Colors.RESET)}")
+            for block in evidence_blocks:
+                block_id = block.get("id", "?")
+                source_id = block.get("sourceId", "?")
+                block_type = block.get("type", "")
+                text = block.get("text", "")
+                # Truncate text for display
+                if len(text) > 100:
+                    text = text[:100] + "..."
+                # Escape newlines for display
+                text = text.replace("\n", " ")
+                print(f"    {c(Colors.CYAN)}[{block_id}]{c(Colors.RESET)} {c(Colors.MUTED)}(source {source_id}, {block_type}){c(Colors.RESET)}")
+                print(f"        {c(Colors.MUTED)}\"{text}\"{c(Colors.RESET)}")
+
+        # Citation answer (Pass 4) - the grounded draft from LlamaIndex
+        if citation_answer := payload.get("citationAnswer"):
+            print(f"  {c(Colors.LABEL)}Citation answer (grounded draft):{c(Colors.RESET)}")
+            # Truncate for display
+            if len(citation_answer) > 300:
+                citation_answer = citation_answer[:300] + "..."
+            for line in citation_answer.split("\n"):
+                print(f"    {c(Colors.MUTED)}{line}{c(Colors.RESET)}")
+
+        # Verdict (Pass 2.5/4.5)
+        if verdict := payload.get("verdict"):
+            if verdict == "APPROVED":
+                faith = payload.get("faithfulness", 0)
+                print(f"  {c(Colors.BRIGHT_GREEN)}✓ APPROVED{c(Colors.RESET)} {c(Colors.MUTED)}(faithfulness: {faith:.2f}){c(Colors.RESET)}")
+            else:
+                issues = payload.get("issues", [])
+                print(f"  {c(Colors.RED)}✗ ISSUES_FOUND ({len(issues)} issue(s)){c(Colors.RESET)}")
+                for issue in issues:
+                    claim = issue.get("claim", "")[:50]
+                    cite = issue.get("citation", "")
+                    issue_type = issue.get("type", "")
+                    severity = issue.get("severity", "")
+                    cite_str = f" [{cite}]" if cite else ""
+                    print(f"    {c(Colors.MUTED)}- \"{claim}\"{cite_str}: {issue_type} ({severity}){c(Colors.RESET)}")
+                if retry_of == 0:  # About to retry
+                    print(f"  {c(Colors.YELLOW)}→ Retrying...{c(Colors.RESET)}")
+
+        # Output (Pass 2/4 - show internal monologue or speech)
+        if output := payload.get("output"):
+            # Truncate for display
+            if len(output) > 500:
+                output = output[:500] + "..."
+            # Indent each line
+            for line in output.split("\n"):
+                print(f"  {c(Colors.MUTED)}{line}{c(Colors.RESET)}")
 
     def _c(self, color: str) -> str:
         return color if self.use_color else ""
@@ -420,6 +524,7 @@ class NPCChat:
                     character_id=npc.id,
                     message=user_input,
                     history=self.history,
+                    verbose=self.verbose,
                 )
                 last_response = response
 
@@ -475,6 +580,8 @@ async def run_npc_chat(
     player_jwt: Optional[str] = None,
     base_url: str = LOREGUARD_API_URL,
     config: Optional[ClientConfig] = None,
+    verbose: bool = False,
+    tunnel=None,
 ) -> None:
     """Run the NPC chat mode.
 
@@ -483,12 +590,21 @@ async def run_npc_chat(
         player_jwt: Player JWT from Steam exchange (for game clients)
         base_url: Loreguard API base URL (default: https://api.loreguard.com)
         config: Optional client configuration for timeouts
+        verbose: If True, show pipeline pass updates via WebSocket
+        tunnel: BackendTunnel instance for receiving pass_update messages (required for verbose)
 
     Note:
         Only one of api_token or player_jwt should be provided.
         Player JWTs are subject to rate limiting (60 req/min per player).
     """
-    chat = NPCChat(api_token=api_token, player_jwt=player_jwt, base_url=base_url, config=config)
+    chat = NPCChat(
+        api_token=api_token,
+        player_jwt=player_jwt,
+        base_url=base_url,
+        config=config,
+        verbose=verbose,
+        tunnel=tunnel,
+    )
 
     while True:
         npc = await chat.select_npc()

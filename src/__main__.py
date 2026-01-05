@@ -2,7 +2,7 @@
 """Loreguard - Unified entry point.
 
 Automatically detects mode:
-- No arguments → Interactive wizard
+- No arguments → Interactive TUI wizard
 - With arguments → Headless CLI mode
 """
 
@@ -20,17 +20,25 @@ def main():
         cli_main()
         return
 
-    # Check if we have real arguments (not just the script name)
-    has_args = bool(args)
+    # Check for mode flags
+    dev_mode = '--dev' in args
+    verbose = '-v' in args or '--verbose' in args
 
-    if has_args:
+    # Flags that should still launch TUI mode (not CLI mode)
+    tui_only_flags = {'--dev', '-v', '--verbose'}
+
+    # Check if we have real arguments that require CLI mode
+    has_cli_args = bool([a for a in args if a not in tui_only_flags])
+
+    if has_cli_args:
         # Headless CLI mode
         from .cli import main as cli_main
         cli_main()
     else:
-        # Interactive wizard mode
-        from .wizard import main as wizard_main
-        wizard_main()
+        # Interactive TUI wizard mode
+        from .tui import LoreguardApp
+        app = LoreguardApp(dev_mode=dev_mode, verbose=verbose)
+        app.run()
 
 
 if __name__ == "__main__":

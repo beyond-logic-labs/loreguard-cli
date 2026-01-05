@@ -272,6 +272,117 @@ class LiveStatusDisplay:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Menu Item
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class MenuItem:
+    """A menu item."""
+    label: str
+    value: str
+    description: str = ""
+    disabled: bool = False
+    tag: str = ""
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Menu - Simple Rich-based menu using numbered choices
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class Menu:
+    """Simple menu using Rich console prompts.
+
+    Since we're running inside Textual, this provides a fallback for legacy code.
+    """
+
+    def __init__(
+        self,
+        items: list,
+        title: str = "",
+        prompt: str = "",
+        allow_cancel: bool = True,
+    ):
+        self.items = items
+        self.title = title
+        self.prompt = prompt
+        self.allow_cancel = allow_cancel
+
+    def run(self) -> Optional[MenuItem]:
+        """Run the menu and return selected item or None if cancelled."""
+        if not self.items:
+            return None
+
+        console.print()
+        if self.title:
+            console.print(f"[bold cyan]{self.title}[/bold cyan]")
+        if self.prompt:
+            console.print(f"[dim]{self.prompt}[/dim]")
+        console.print()
+
+        for i, item in enumerate(self.items, 1):
+            tag_str = f" [dim][{item.tag}][/dim]" if item.tag else ""
+            console.print(f"  [cyan]{i}.[/cyan] {item.label}{tag_str}")
+            if item.description:
+                console.print(f"     [dim]{item.description}[/dim]")
+
+        console.print()
+        try:
+            choice = console.input("[cyan]Choice (number or q to cancel):[/cyan] ")
+            if choice.lower() in ('q', 'quit', 'cancel', ''):
+                return None
+            idx = int(choice) - 1
+            if 0 <= idx < len(self.items):
+                return self.items[idx]
+            return None
+        except (ValueError, EOFError, KeyboardInterrupt):
+            return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Input Field - Simple Rich-based input
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class InputField:
+    """Simple input field using Rich console prompts."""
+
+    def __init__(
+        self,
+        prompt: str = "Enter value:",
+        default: str = "",
+        password: bool = False,
+        validator=None,
+    ):
+        self.prompt = prompt
+        self.default = default
+        self.password = password
+        self.validator = validator
+
+    def run(self, title: str = "") -> Optional[str]:
+        """Run the input and return value or None if cancelled."""
+        console.print()
+        if title:
+            console.print(f"[bold cyan]{title}[/bold cyan]")
+
+        try:
+            if self.password:
+                import getpass
+                value = getpass.getpass(f"{self.prompt} ")
+            else:
+                value = console.input(f"[cyan]{self.prompt}[/cyan] ")
+
+            if self.validator:
+                error = self.validator(value)
+                if error:
+                    console.print(f"[red]✗ {error}[/red]")
+                    return self.run(title)
+
+            return value if value else self.default
+
+        except (EOFError, KeyboardInterrupt):
+            return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Legacy exports for compatibility
 # ═══════════════════════════════════════════════════════════════════════════════
 
