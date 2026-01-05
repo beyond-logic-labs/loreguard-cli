@@ -363,19 +363,29 @@ class NPCChat(Vertical):
             # Sources (Pass 1)
             if sources := payload.get("sources"):
                 text.append(f"\n  Sources ({len(sources)}):", style=FG_DIM)
-                for src in sources[:5]:  # Show first 5
+                for src in sources:
                     score = src.get("score", 0)
                     path = src.get("path", "")
+                    src_type = src.get("type", "")
                     src_id = src.get("id", "?")
-                    text.append(f"\n    [{src_id}] {path} (score: {score:.2f})", style=FG_DIM)
+                    text.append(f"\n    [{src_id}] {path} (score: {score:.2f}, {src_type})", style=FG_DIM)
 
             # Evidence blocks (Pass 4)
             if evidence_blocks := payload.get("evidenceBlocks"):
                 text.append(f"\n  Evidence ({len(evidence_blocks)}):", style=FG_DIM)
-                for block in evidence_blocks[:3]:  # Show first 3
+                for block in evidence_blocks:
                     block_id = block.get("id", "?")
-                    block_text = block.get("text", "")[:80]
-                    text.append(f"\n    [{block_id}] \"{block_text}...\"", style=FG_DIM)
+                    source_id = block.get("sourceId", "?")
+                    block_type = block.get("type", "")
+                    block_text = block.get("text", "")
+                    text.append(f"\n    [{block_id}] (source {source_id}, {block_type})", style=CYAN)
+                    text.append(f"\n      \"{block_text}\"", style=FG_DIM)
+
+            # Citation answer (Pass 4) - the grounded draft from LlamaIndex
+            if citation_answer := payload.get("citationAnswer"):
+                text.append(f"\n  Citation answer (grounded draft):", style=FG_DIM)
+                for line in citation_answer.split("\n"):
+                    text.append(f"\n    {line}", style=FG_DIM)
 
             # Verdict (Pass 2.5/4.5)
             if verdict := payload.get("verdict"):
@@ -385,14 +395,19 @@ class NPCChat(Vertical):
                 else:
                     issues = payload.get("issues", [])
                     text.append(f"\n  ✗ ISSUES_FOUND ({len(issues)} issue(s))", style="#FF5555")
-                    for issue in issues[:3]:
-                        claim = issue.get("claim", "")[:40]
-                        text.append(f"\n    - \"{claim}...\"", style=FG_DIM)
+                    for issue in issues:
+                        claim = issue.get("claim", "")
+                        cite = issue.get("citation", "")
+                        issue_type = issue.get("type", "")
+                        severity = issue.get("severity", "")
+                        cite_str = f" [{cite}]" if cite else ""
+                        text.append(f"\n    - \"{claim}\"{cite_str}: {issue_type} ({severity})", style=FG_DIM)
 
             # Output (Pass 2/4 - internal monologue or speech)
             if output := payload.get("output"):
-                output_preview = output[:200] + "..." if len(output) > 200 else output
-                text.append(f"\n  Output: {output_preview}", style=FG_DIM)
+                text.append(f"\n  Output:", style=FG_DIM)
+                for line in output.split("\n"):
+                    text.append(f"\n    {line}", style=FG_DIM)
 
         label = Label(text, classes="chat-message")
         container.mount(label)
