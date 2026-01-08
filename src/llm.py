@@ -10,10 +10,11 @@ Supports llama-server's OpenAI-compatible /v1/chat/completions API with:
 Based on netshell's local_llm.go implementation.
 """
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, AsyncGenerator, Optional
 
 import httpx
 
@@ -164,6 +165,214 @@ class LLMProxy:
             # Log full error but return sanitized message
             logger.exception("LLM generation error")
             return {"error": "Internal LLM error", "content": ""}
+
+    async def generate_streaming(
+        self, request: dict | LLMRequest
+    ) -> AsyncGenerator[dict, None]:
+        """
+        Generate text from llama.cpp server with token-by-token streaming.
+
+        Yields chunks as they arrive:
+        - {"type": "token", "token": "...", "index": N} for each token
+        - {"type": "done", "content": "...", "thinking": "...", "usage": {...}} on completion
+        - {"type": "error", "error": "..."} on error
+
+        Request format is the same as generate().
+        """
+        try:
+            # Convert dict to LLMRequest if needed
+            if isinstance(request, dict):
+                req = self._dict_to_request(request)
+            else:
+                req = request
+
+            # Validate and possibly compact messages
+            req.messages = self._validate_messages(req.messages)
+
+            async for chunk in self._generate_llamacpp_streaming(req):
+                yield chunk
+
+        except httpx.TimeoutException:
+            logger.warning("LLM streaming request timed out")
+            yield {"type": "error", "error": "LLM request timed out"}
+        except httpx.ConnectError:
+            logger.warning(f"Could not connect to LLM server at {self.endpoint}")
+            yield {"type": "error", "error": "Could not connect to LLM server"}
+        except ValueError as e:
+            logger.warning(f"Validation error: {e}")
+            yield {"type": "error", "error": str(e)}
+        except Exception as e:
+            logger.exception("LLM streaming error")
+            yield {"type": "error", "error": "Internal LLM error"}
+
+    async def _generate_llamacpp_streaming(
+        self, req: LLMRequest
+    ) -> AsyncGenerator[dict, None]:
+        """Generate using llama.cpp's OpenAI-compatible streaming API."""
+        # Get sampling config (use defaults if not provided)
+        sampling = req.sampling or SamplingConfig()
+
+        # Cap max_tokens for safety
+        max_tokens = min(req.max_tokens, 4096) if req.max_tokens > 0 else 512
+
+        # Log request summary
+        total_chars = sum(len(m.get("content", "")) for m in req.messages)
+        logger.debug(
+            f"LLM streaming request: {len(req.messages)} messages, {total_chars} chars, max_tokens={max_tokens}"
+        )
+
+        # Build request payload with stream=True
+        payload: dict[str, Any] = {
+            "messages": req.messages,
+            "temperature": req.temperature,
+            "max_tokens": max_tokens,
+            "stream": True,  # Enable streaming
+            "top_p": sampling.top_p,
+            "top_k": sampling.top_k,
+            "min_p": sampling.min_p,
+            "repeat_penalty": sampling.repeat_penalty,
+            "repeat_last_n": sampling.repeat_last_n,
+            "frequency_penalty": sampling.frequency_penalty,
+            "presence_penalty": sampling.presence_penalty,
+            "stop": req.stop,
+        }
+
+        # Disable thinking mode if requested (for Qwen3)
+        if req.disable_thinking:
+            payload["enable_thinking"] = False
+
+        # Note: JSON mode is not compatible with streaming in llama.cpp
+        # If force_json is requested, fall back to non-streaming
+        if req.force_json:
+            logger.warning("JSON mode not supported with streaming, falling back to non-streaming")
+            result = await self._generate_llamacpp(req)
+            if result.get("error"):
+                yield {"type": "error", "error": result["error"]}
+            else:
+                # Yield the complete response as a single "token"
+                yield {
+                    "type": "token",
+                    "token": result.get("content", ""),
+                    "index": 0,
+                }
+                yield {
+                    "type": "done",
+                    "content": result.get("content", ""),
+                    "thinking": result.get("thinking", ""),
+                    "usage": result.get("usage", {}),
+                }
+            return
+
+        # Use per-request timeout if specified
+        timeout = req.timeout or self.default_timeout
+
+        # Track accumulated content for final processing
+        accumulated_content = []
+        token_index = 0
+        usage = {}
+
+        try:
+            # Use a custom timeout for streaming:
+            # - connect: 10 seconds (fail fast if server unreachable)
+            # - read: None (no timeout - tokens come intermittently)
+            # - write: 30 seconds (sending the request)
+            # - pool: 10 seconds (getting a connection from pool)
+            stream_timeout = httpx.Timeout(
+                connect=10.0,
+                read=None,  # No read timeout for streaming
+                write=30.0,
+                pool=10.0,
+            )
+            async with self.client.stream(
+                "POST",
+                f"{self.endpoint}/v1/chat/completions",
+                json=payload,
+                timeout=stream_timeout,
+            ) as response:
+                if response.status_code != 200:
+                    error_text = await response.aread()
+                    error_text = error_text.decode()[:500]
+                    logger.warning(f"llama.cpp streaming returned {response.status_code}: {error_text}")
+                    yield {"type": "error", "error": f"LLM server error ({response.status_code})"}
+                    return
+
+                # Parse SSE stream
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+
+                    # SSE format: "data: {...}" or "data: [DONE]"
+                    if not line.startswith("data: "):
+                        continue
+
+                    data_str = line[6:]  # Remove "data: " prefix
+
+                    # Check for end of stream
+                    if data_str.strip() == "[DONE]":
+                        break
+
+                    try:
+                        chunk_data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse SSE chunk: {data_str[:100]}")
+                        continue
+
+                    # Extract token from delta
+                    choices = chunk_data.get("choices", [])
+                    if not choices:
+                        continue
+
+                    delta = choices[0].get("delta", {})
+                    token = delta.get("content", "")
+
+                    # Check for finish_reason
+                    finish_reason = choices[0].get("finish_reason")
+
+                    # Extract usage if present (some servers send it with final chunk)
+                    if "usage" in chunk_data:
+                        usage = chunk_data["usage"]
+
+                    if token:
+                        accumulated_content.append(token)
+                        yield {
+                            "type": "token",
+                            "token": token,
+                            "index": token_index,
+                        }
+                        token_index += 1
+
+                    # Stop on finish_reason
+                    if finish_reason:
+                        break
+
+        except httpx.TimeoutException:
+            logger.warning("LLM streaming timed out mid-stream")
+            yield {"type": "error", "error": "LLM streaming timed out"}
+            return
+
+        # Process final content
+        raw_content = "".join(accumulated_content)
+
+        if not raw_content:
+            yield {"type": "error", "error": "Empty content from LLM"}
+            return
+
+        # Extract thinking from content
+        thinking, content = self._extract_thinking(raw_content)
+
+        # Strip chat markers
+        content = self._strip_chat_markers(content)
+
+        logger.debug(f"LLM streaming complete: {len(content)} chars, {token_index} tokens")
+
+        yield {
+            "type": "done",
+            "content": content,
+            "thinking": thinking,
+            "usage": usage,
+            "model": req.model,
+            "token_count": token_index,
+        }
 
     def _validate_messages(self, messages: list[dict]) -> list[dict]:
         """Validate message structure and size limits. Returns (possibly compacted) messages."""

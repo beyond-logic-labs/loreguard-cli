@@ -57,6 +57,7 @@ class LoreguardCLI:
 
         self._llama = None
         self._tunnel = None
+        self._sdk_port: Optional[int] = None
         self._running = False
 
         # Metrics
@@ -249,6 +250,18 @@ class LoreguardCLI:
 
             self._tunnel.on_request_complete = self._on_request_complete
 
+            # Start SDK server for local game clients
+            from .http_server import start_sdk_server
+            try:
+                self._sdk_port = start_sdk_server(
+                    tunnel=self._tunnel,
+                    main_loop=asyncio.get_running_loop(),
+                )
+                log.info(f"SDK server listening on 127.0.0.1:{self._sdk_port}")
+            except Exception as e:
+                log.error(f"Failed to start SDK server: {e}")
+                return False
+
             # Start connection (runs in background)
             asyncio.create_task(self._tunnel.connect())
 
@@ -304,6 +317,12 @@ class LoreguardCLI:
                 await self._tunnel.disconnect()
             except Exception:
                 pass
+        # Stop SDK server (cleans up runtime.json)
+        try:
+            from .http_server import stop_sdk_server
+            stop_sdk_server()
+        except Exception:
+            pass
 
         if self._llama:
             try:
