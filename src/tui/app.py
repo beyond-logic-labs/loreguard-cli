@@ -5,6 +5,7 @@ from typing import Optional, Any
 
 from textual.app import App
 from textual.binding import Binding
+from textual.driver import Driver
 
 from .styles import LOREGUARD_CSS
 from .widgets.hardware_info import HardwareData
@@ -38,6 +39,20 @@ class LoreguardApp(App):
     _llama_process: Any = None
     _tunnel: Any = None
 
+    def get_driver_class(self) -> type[Driver]:
+        """Return a driver class with mouse reporting disabled."""
+        base_driver = super().get_driver_class()
+        if getattr(base_driver, "_LOREGUARD_NO_MOUSE", False):
+            return base_driver
+
+        class NoMouseDriver(base_driver):
+            _LOREGUARD_NO_MOUSE = True
+
+            def _enable_mouse_support(self) -> None:
+                return None
+
+        return NoMouseDriver
+
     def __init__(self, dev_mode: bool = False, verbose: bool = False) -> None:
         super().__init__()
         self.dev_mode = dev_mode
@@ -51,6 +66,10 @@ class LoreguardApp(App):
 
     def action_quit(self) -> None:
         """Quit with cleanup."""
+        # Stop SDK server
+        from ..http_server import stop_sdk_server
+        stop_sdk_server()
+
         if self._llama_process:
             self._llama_process.stop()
         self.exit()

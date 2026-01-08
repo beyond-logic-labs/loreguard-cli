@@ -1,26 +1,41 @@
 """NPC Chat widget - embedded chat panel for main screen.
 
-Uses the Loreguard API for NPC conversations:
-- POST /api/chat - Chat with an NPC (grounded responses)
+Uses the local proxy for NPC conversations with token streaming:
+- POST /api/chat - Chat with an NPC (grounded responses via SSE streaming)
 """
 
+import getpass
+import json
 from typing import TYPE_CHECKING
 
 import httpx
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
-from textual.widgets import Static, Input, Label
+from textual.widgets import Static, Input
 from textual.binding import Binding
 from rich.text import Text
 
 from ..styles import PURPLE, CYAN, PINK, FG, FG_DIM, GREEN
 from .banner import get_gradient_color
+from ...runtime import RuntimeInfo
 
 if TYPE_CHECKING:
     from ..app import LoreguardApp
 
-# Loreguard API
+# Fallback to cloud API if local proxy unavailable
 LOREGUARD_API_URL = "https://api.loreguard.com"
+
+
+def get_local_proxy_url() -> str | None:
+    """Get the local proxy URL from runtime.json.
+
+    Returns:
+        URL like "http://127.0.0.1:54321" or None if not available.
+    """
+    info = RuntimeInfo.load()
+    if info and info.port:
+        return f"http://127.0.0.1:{info.port}"
+    return None
 
 
 class NPCChat(Vertical):
@@ -61,7 +76,7 @@ class NPCChat(Vertical):
 
     NPCChat .chat-message {{
         padding: 0;
-        margin: 0;
+        margin: 0 0 1 0;
         width: 100%;
         overflow: hidden;
     }}
@@ -92,6 +107,12 @@ class NPCChat(Vertical):
         self._api_token: str = ""
         self._verbose: bool = False
         self._messages: list[dict] = []
+        try:
+            self._player_handle = getpass.getuser()
+        except Exception:
+            self._player_handle = ""
+        if not self._player_handle:
+            self._player_handle = "tui_user"
         self._generating = False
         self._visible = False
 
@@ -197,9 +218,19 @@ class NPCChat(Vertical):
             text.append(f"{self._npc_name}: ", style=f"bold {PINK}")
             text.append(content, style=FG)
 
-        label = Label(text, classes="chat-message")
-        container.mount(label)
+        # Use Static for better text wrapping
+        widget = Static(text, classes="chat-message")
+        container.mount(widget)
         container.scroll_end(animate=False)
+
+    def _build_history(self) -> list[dict[str, str]]:
+        """Build history payload for API requests."""
+        history: list[dict[str, str]] = []
+        for msg in self._messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            history.append({"role": role, "content": content})
+        return history
 
     def _add_npc_message(self, content: str) -> None:
         """Add an NPC message."""
@@ -236,8 +267,9 @@ class NPCChat(Vertical):
         self.run_worker(self._do_generate(user_message))
 
     async def _do_generate(self, user_message: str) -> None:
-        """Worker to generate response using Loreguard API."""
+        """Worker to generate response using local proxy with SSE streaming."""
         status = self.query_one("#npc-status-line", Static)
+        container = self.query_one("#npc-chat-container", VerticalScroll)
 
         if not self._npc_id or not self._api_token:
             status.update(Text("Not connected to an NPC", style="#FF5555"))
@@ -245,82 +277,39 @@ class NPCChat(Vertical):
             return
 
         try:
-            # Build history for API
-            history = []
-            for msg in self._messages:
-                history.append({
-                    "role": msg["role"],
-                    "content": msg["content"],
-                })
-
             # Build request payload
+            history = self._build_history()
             payload = {
                 "character_id": self._npc_id,
                 "message": user_message,
+                "player_handle": self._player_handle,
+                "player_id": self._player_handle,
                 "history": history,
-                "player_id": "tui_user",
+                "context": history,
             }
 
             # Add verbose flag to request pipeline debug info
             if self._verbose:
                 payload["verbose"] = True
 
-            # Call Loreguard API
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    f"{LOREGUARD_API_URL}/api/chat",
-                    headers={
-                        "Authorization": f"Bearer {self._api_token}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                )
-
-                if response.status_code == 200:
-                    data = response.json()
-                    speech = data.get("speech", "")
-                    verified = data.get("verified", False)
-
-                    if speech:
-                        # Show debug info if verbose mode
-                        if self._verbose:
-                            self._show_debug_info(data)
-
-                        # Add verification indicator
-                        indicator = "●" if verified else "○"
-                        self._add_npc_message(f"{speech} {indicator}")
-                        status.update("")
-                    else:
-                        status.update(Text("No response generated", style=FG_DIM))
-                elif response.status_code == 401:
-                    status.update(Text("Authentication failed - invalid token", style="#FF5555"))
-                elif response.status_code == 429:
-                    try:
-                        data = response.json()
-                        limit = data.get("requests_limit", "?")
-                        used = data.get("requests_used", "?")
-                        status.update(Text(f"Rate limited: {used}/{limit} requests", style="#FF5555"))
-                    except Exception:
-                        status.update(Text("Rate limited - please wait", style="#FF5555"))
-                elif response.status_code == 404:
-                    status.update(Text(f"NPC '{self._npc_name}' not found", style="#FF5555"))
+            # Try local proxy first (SSE streaming)
+            try:
+                await self._do_generate_streaming(payload, status, container)
+                return
+            except httpx.ConnectError as e:
+                # Local proxy not available, fall back to cloud API
+                local_url = get_local_proxy_url()
+                if local_url:
+                    status.update(Text(f"Local proxy failed ({local_url}): {e}, using cloud...", style=FG_DIM))
                 else:
-                    # Try to get full error details from response
-                    try:
-                        err_text = response.text
-                        # Try to parse as JSON for cleaner display
-                        try:
-                            err_data = response.json()
-                            err_msg = str(err_data)
-                        except Exception:
-                            err_msg = err_text[:500] if err_text else "No response body"
+                    status.update(Text("No runtime.json found - SDK server not running, using cloud...", style=FG_DIM))
+            except Exception as e:
+                # Other errors - show details and fall back
+                local_url = get_local_proxy_url()
+                status.update(Text(f"Local proxy error ({local_url}): {type(e).__name__}: {e}", style="#FF5555"))
 
-                        # Show in debug area if verbose, otherwise in status
-                        if self._verbose:
-                            self._show_api_error(response.status_code, err_msg, dict(response.headers))
-                        status.update(Text(f"API error {response.status_code}: {err_msg[:100]}", style="#FF5555"))
-                    except Exception as e:
-                        status.update(Text(f"API error {response.status_code}: {e}", style="#FF5555"))
+            # Fallback to cloud API (no streaming)
+            await self._do_generate_cloud(payload, status)
 
         except httpx.ConnectError:
             status.update(Text("Cannot connect to Loreguard API", style="#FF5555"))
@@ -330,6 +319,163 @@ class NPCChat(Vertical):
             status.update(Text(f"Error: {e}", style="#FF5555"))
         finally:
             self._generating = False
+
+    async def _do_generate_streaming(self, payload: dict, status: Static, container: VerticalScroll) -> None:
+        """Generate response using local proxy with SSE streaming."""
+        import time
+        client_start_time = time.time()
+
+        # Get local proxy URL from runtime.json
+        local_proxy_url = get_local_proxy_url()
+        if not local_proxy_url:
+            raise httpx.ConnectError("Local proxy URL not found in runtime.json")
+
+        # Create streaming message widget
+        streaming_text = Text()
+        streaming_text.append(f"{self._npc_name}: ", style=f"bold {PINK}")
+        streaming_widget = Static(streaming_text, classes="chat-message")
+        container.mount(streaming_widget)
+
+        tokens_received = 0
+        speech = ""
+        verified = False
+        final_data = {}
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            async with client.stream(
+                "POST",
+                f"{local_proxy_url}/api/chat",
+                headers={
+                    "Authorization": f"Bearer {self._api_token}",
+                    "Content-Type": "application/json",
+                    "Accept": "text/event-stream",
+                },
+                json=payload,
+            ) as response:
+                if response.status_code != 200:
+                    # Remove streaming label and raise error
+                    streaming_widget.remove()
+                    err_text = await response.aread()
+                    raise Exception(f"API error {response.status_code}: {err_text.decode()[:100]}")
+
+                # Parse SSE events
+                event_type = ""
+                async for line in response.aiter_lines():
+                    line = line.strip()
+
+                    if line.startswith("event:"):
+                        event_type = line[6:].strip()
+                    elif line.startswith("data:"):
+                        data_str = line[5:].strip()
+                        if not data_str:
+                            continue
+
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+
+                        if event_type == "token":
+                            # Stream token to UI
+                            token = data.get("t", "")
+                            if token:
+                                tokens_received += 1
+                                speech += token
+                                # Update the streaming label with new token
+                                streaming_text.append(token, style=FG)
+                                streaming_widget.update(streaming_text)
+                                container.scroll_end(animate=False)
+                                # Update status with token count
+                                status.update(Text(f"Streaming... ({tokens_received} tokens)", style=CYAN))
+
+                        elif event_type == "done":
+                            # Final response received
+                            final_data = data
+                            speech = data.get("speech", speech)
+                            verified = data.get("verified", False)
+
+                        elif event_type == "error":
+                            error_msg = data.get("error", "Unknown error")
+                            streaming_widget.remove()
+                            raise Exception(error_msg)
+
+        # Update final message with verification indicator
+        if speech:
+            indicator = "●" if verified else "○"
+            final_text = Text()
+            final_text.append(f"{self._npc_name}: ", style=f"bold {PINK}")
+            final_text.append(f"{speech} {indicator}", style=FG)
+            streaming_widget.update(final_text)
+
+            # Record message in history
+            self._messages.append({"role": "assistant", "content": speech})
+
+            # Show debug info if verbose
+            if self._verbose and final_data:
+                self._show_debug_info(final_data)
+
+            backend_latency = final_data.get("latency_ms", 0)
+            client_latency = int((time.time() - client_start_time) * 1000)
+            status.update(Text(f"Done ({client_latency}ms total, {backend_latency}ms backend, {tokens_received} tokens)", style=GREEN))
+        else:
+            streaming_widget.remove()
+            status.update(Text("No response generated", style=FG_DIM))
+
+    async def _do_generate_cloud(self, payload: dict, status: Static) -> None:
+        """Fallback: Generate response using cloud API (no streaming)."""
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{LOREGUARD_API_URL}/api/chat",
+                headers={
+                    "Authorization": f"Bearer {self._api_token}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                speech = data.get("speech", "")
+                verified = data.get("verified", False)
+
+                if speech:
+                    # Show debug info if verbose mode
+                    if self._verbose:
+                        self._show_debug_info(data)
+
+                    # Add verification indicator
+                    indicator = "●" if verified else "○"
+                    self._add_npc_message(f"{speech} {indicator}")
+                    status.update("")
+                else:
+                    status.update(Text("No response generated", style=FG_DIM))
+            elif response.status_code == 401:
+                status.update(Text("Authentication failed - invalid token", style="#FF5555"))
+            elif response.status_code == 429:
+                try:
+                    data = response.json()
+                    limit = data.get("requests_limit", "?")
+                    used = data.get("requests_used", "?")
+                    status.update(Text(f"Rate limited: {used}/{limit} requests", style="#FF5555"))
+                except Exception:
+                    status.update(Text("Rate limited - please wait", style="#FF5555"))
+            elif response.status_code == 404:
+                status.update(Text(f"NPC '{self._npc_name}' not found", style="#FF5555"))
+            else:
+                # Try to get full error details from response
+                try:
+                    err_text = response.text
+                    try:
+                        err_data = response.json()
+                        err_msg = str(err_data)
+                    except Exception:
+                        err_msg = err_text[:500] if err_text else "No response body"
+
+                    if self._verbose:
+                        self._show_api_error(response.status_code, err_msg, dict(response.headers))
+                    status.update(Text(f"API error {response.status_code}: {err_msg[:100]}", style="#FF5555"))
+                except Exception as e:
+                    status.update(Text(f"API error {response.status_code}: {e}", style="#FF5555"))
 
     def on_pass_update(self, payload: dict) -> None:
         """Handle pass_update message from backend (verbose mode).
@@ -413,8 +559,8 @@ class NPCChat(Vertical):
                 for line in output.split("\n"):
                     text.append(f"\n    {line}", style=FG_DIM)
 
-        label = Label(text, classes="chat-message")
-        container.mount(label)
+        widget = Static(text, classes="chat-message")
+        container.mount(widget)
         container.scroll_end(animate=False)
 
     def _show_api_error(self, status_code: int, body: str, headers: dict) -> None:
@@ -429,8 +575,8 @@ class NPCChat(Vertical):
             text.append(f"  {key}: {value}\n", style=FG_DIM)
         text.append("─────────────────────", style="#FF5555")
 
-        label = Label(text, classes="chat-message")
-        container.mount(label)
+        widget = Static(text, classes="chat-message")
+        container.mount(widget)
         container.scroll_end(animate=False)
 
     def _show_debug_info(self, data: dict) -> None:
@@ -471,8 +617,8 @@ class NPCChat(Vertical):
                 text.append(f"{line}\n", style=FG_DIM)
             text.append("─────────────", style=FG_DIM)
 
-            label = Label(text, classes="chat-message")
-            container.mount(label)
+            widget = Static(text, classes="chat-message")
+            container.mount(widget)
             container.scroll_end(animate=False)
 
     def action_close_chat(self) -> None:

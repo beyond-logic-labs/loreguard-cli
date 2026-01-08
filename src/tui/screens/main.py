@@ -1,5 +1,6 @@
 """Main screen - persistent base with banner that stays visible."""
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -356,6 +357,32 @@ class MainScreen(Screen):
                     pass
 
             app._tunnel.on_pass_update = on_pass_update
+
+            # Start SDK server for game clients (shares the tunnel)
+            from ...http_server import start_sdk_server, update_backend_status
+
+            def on_sdk_status(msg: str) -> None:
+                # Log SDK server status
+                pass  # Could update a status widget here
+
+            sdk_port = start_sdk_server(
+                tunnel=app._tunnel,
+                on_status_change=on_sdk_status,
+                main_loop=asyncio.get_event_loop(),
+            )
+            self._sdk_port = sdk_port
+
+            # Wrap log_callback to update runtime.json backend status
+            original_log_callback = log_callback
+            def log_callback_with_runtime(msg: str, lvl: str) -> None:
+                original_log_callback(msg, lvl)
+                # Update runtime.json when connection status changes
+                if "Registered as worker" in msg:
+                    update_backend_status(True)
+                elif "Connection failed" in msg or "Connection closed" in msg or "Disconnected" in msg:
+                    update_backend_status(False)
+
+            app._tunnel.log_callback = log_callback_with_runtime
 
             # Start connection in background - let log_callback handle status updates
             asyncio.create_task(app._tunnel.connect())
