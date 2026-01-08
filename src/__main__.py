@@ -4,15 +4,24 @@
 Automatically detects mode:
 - No arguments → Interactive TUI wizard
 - With arguments → Headless CLI mode
+- status → Show runtime status (for SDK discovery)
 """
 
 import sys
+import json
 
 
 def main():
     """Main entry point."""
     # Check if any meaningful arguments were provided
     args = sys.argv[1:]
+
+    # Handle 'status' command - for SDK discovery
+    if args and args[0] == "status":
+        from .runtime import get_status
+        status = get_status()
+        print(json.dumps(status, indent=2))
+        sys.exit(0 if status.get("running") else 1)
 
     # Filter out help flags - these should show CLI help
     if any(a in ('-h', '--help') for a in args):

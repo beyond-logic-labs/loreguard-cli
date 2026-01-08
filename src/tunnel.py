@@ -14,7 +14,7 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Optional, TYPE_CHECKING
+from typing import Any, Callable, Optional, TYPE_CHECKING
 
 import websockets
 from rich.console import Console
@@ -84,6 +84,10 @@ class BackendTunnel:
         # Callback for verbose pass updates (called when backend sends pass_update)
         # Signature: (payload: dict) -> None
         self.on_pass_update: Callable[[dict], None] | None = None
+
+        # Pending chat requests from local /api/chat endpoint
+        # Maps request_id -> asyncio.Queue for routing responses
+        self._pending_chat_requests: dict[str, asyncio.Queue[dict[str, Any]]] = {}
 
     def _log(self, message: str, level: str = "info"):
         """Log a message through callback or fallback to console."""
@@ -388,6 +392,10 @@ class BackendTunnel:
             # Backend wants us to run batch NLI verification
             await self._handle_nli_batch_request(data)
 
+        elif msg_type == "llm_stream_request":
+            # Backend wants streaming LLM generation
+            await self._handle_llm_stream_request(data)
+
         elif msg_type == "ping":
             # Respond to keep-alive ping
             await self._send({
@@ -418,6 +426,14 @@ class BackendTunnel:
             payload = data.get("payload", {})
             if self.on_pass_update:
                 self.on_pass_update(payload)
+
+        elif msg_type == "chat_stream_token":
+            # Token from backend for a chat request (local proxy architecture)
+            await self._handle_chat_stream_token(data)
+
+        elif msg_type == "chat_stream_done":
+            # Chat response complete from backend (local proxy architecture)
+            await self._handle_chat_stream_done(data)
 
         else:
             logger.debug(f"Unknown message type: {msg_type}")
@@ -490,6 +506,154 @@ class BackendTunnel:
                     "workerId": self.worker_id,
                     "success": False,
                     "content": "",
+                    "errorMessage": str(e),
+                },
+            })
+
+    async def _handle_llm_stream_request(self, data: dict):
+        """Handle a streaming LLM inference request from the backend.
+
+        Streams tokens back to the backend via llm_token messages,
+        then sends llm_stream_complete when done.
+        """
+        payload = data.get("payload", {})
+        request_id = payload.get("requestId")
+        trace_id = data.get("traceId", "")
+
+        if not request_id:
+            self._log("LLM stream request missing requestId", "error")
+            return
+
+        self._log(f"LLM stream request {request_id[:8]}...", "info")
+        start_time = time.time()
+
+        try:
+            # Convert stream request payload to LLM request format
+            llm_request = {
+                "messages": [
+                    {"role": "system", "content": payload.get("systemPrompt", "")},
+                    {"role": "user", "content": payload.get("userMessage", "")},
+                ],
+                "max_tokens": payload.get("maxTokens", 512),
+                "temperature": payload.get("temperature", 0.7),
+                "timeout": payload.get("timeoutMs", 120000) / 1000,  # Convert to seconds
+            }
+
+            # Stream tokens from LLM
+            token_count = 0
+            content_parts = []
+            thinking = ""
+            usage = {}
+
+            async for chunk in self.llm_proxy.generate_streaming(llm_request):
+                chunk_type = chunk.get("type")
+
+                if chunk_type == "token":
+                    token = chunk.get("token", "")
+                    if token:
+                        content_parts.append(token)
+                        token_count += 1
+
+                        # Send token message to backend
+                        await self._send({
+                            "id": self._generate_message_id(),
+                            "type": "llm_token",
+                            "timestamp": self._iso_timestamp(),
+                            "senderId": self.worker_id,
+                            "traceId": trace_id,
+                            "payload": {
+                                "requestId": request_id,
+                                "token": token,
+                                "index": chunk.get("index", token_count - 1),
+                            },
+                        })
+
+                elif chunk_type == "done":
+                    # Final chunk with complete content
+                    thinking = chunk.get("thinking", "")
+                    usage = chunk.get("usage", {})
+                    # Use the processed content from the done chunk
+                    final_content = chunk.get("content", "".join(content_parts))
+
+                    latency_ms = int((time.time() - start_time) * 1000)
+
+                    # Send completion message
+                    await self._send({
+                        "id": self._generate_message_id(),
+                        "type": "llm_stream_complete",
+                        "timestamp": self._iso_timestamp(),
+                        "senderId": self.worker_id,
+                        "traceId": trace_id,
+                        "payload": {
+                            "requestId": request_id,
+                            "workerId": self.worker_id,
+                            "success": True,
+                            "content": final_content,
+                            "thinking": thinking,
+                            "tokenCount": token_count,
+                            "latencyMs": latency_ms,
+                        },
+                    })
+
+                    self._log(
+                        f"Stream complete for {request_id[:8]}... ({token_count} tokens, {latency_ms}ms)",
+                        "success",
+                    )
+
+                    # Emit metrics callback
+                    if self.on_request_complete:
+                        npc_name = payload.get("context", {}).get("npcName", "NPC")
+                        # Estimate TTFT as time for first token (actual TTFT would require timing first token)
+                        ttft_ms = latency_ms / max(token_count, 1)
+                        self.on_request_complete(npc_name, token_count, ttft_ms, latency_ms)
+
+                    return  # Done
+
+                elif chunk_type == "error":
+                    # Error during streaming
+                    error_msg = chunk.get("error", "Unknown error")
+                    latency_ms = int((time.time() - start_time) * 1000)
+
+                    await self._send({
+                        "id": self._generate_message_id(),
+                        "type": "llm_stream_complete",
+                        "timestamp": self._iso_timestamp(),
+                        "senderId": self.worker_id,
+                        "traceId": trace_id,
+                        "payload": {
+                            "requestId": request_id,
+                            "workerId": self.worker_id,
+                            "success": False,
+                            "content": "",
+                            "tokenCount": token_count,
+                            "latencyMs": latency_ms,
+                            "errorMessage": error_msg,
+                        },
+                    })
+
+                    self._log(f"Stream error for {request_id[:8]}...: {error_msg}", "error")
+                    return
+
+        except Exception as e:
+            logger.exception("LLM stream handling error")
+            self._log(f"Stream error: {e}", "error")
+
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            # Send error completion
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "llm_stream_complete",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
+                    "content": "",
+                    "tokenCount": 0,
+                    "latencyMs": latency_ms,
                     "errorMessage": str(e),
                 },
             })
@@ -648,6 +812,129 @@ class BackendTunnel:
                     "errorMessage": str(e),
                 },
             })
+
+    # =========================================================================
+    # Local Proxy Architecture: Chat Request/Response Handling
+    # =========================================================================
+
+    async def send_chat_request(
+        self,
+        request_id: str,
+        character_id: str,
+        message: str,
+        player_handle: str = "",
+        current_context: str = "",
+        history: list[dict[str, Any]] | None = None,
+        enable_thinking: bool = False,
+        verbose: bool = False,
+    ) -> asyncio.Queue[dict[str, Any]]:
+        """Send a chat request to the backend and return a queue for responses.
+
+        The game client calls POST /api/chat on localhost, which calls this method.
+        The backend runs the pipeline and sends tokens/completion back.
+
+        Returns:
+            Queue that will receive:
+            - {"type": "token", "token": "...", "index": N} for each token
+            - {"type": "done", "data": {...}} when complete
+            - {"type": "error", "error": "..."} on error
+        """
+        if not self.connected or not self.registered:
+            # Return a queue with error
+            queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+            await queue.put({"type": "error", "error": "Not connected to backend"})
+            return queue
+
+        # Create response queue
+        queue = asyncio.Queue()
+        self._pending_chat_requests[request_id] = queue
+
+        # Send chat_request to backend
+        await self._send({
+            "id": self._generate_message_id(),
+            "type": "chat_request",
+            "timestamp": self._iso_timestamp(),
+            "senderId": self.worker_id,
+            "payload": {
+                "requestId": request_id,
+                "characterId": character_id,
+                "message": message,
+                "playerHandle": player_handle,
+                "currentContext": current_context,
+                "history": history or [],
+                "enableThinking": enable_thinking,
+                "verbose": verbose,
+                "stream": True,  # Always streaming for SSE
+            },
+        })
+
+        self._log(f"Chat request sent: {request_id[:8]}... (character: {character_id})", "info")
+        return queue
+
+    def cancel_chat_request(self, request_id: str):
+        """Remove a pending chat request (e.g., on client disconnect)."""
+        self._pending_chat_requests.pop(request_id, None)
+
+    async def _handle_chat_stream_token(self, data: dict):
+        """Handle a chat_stream_token message from the backend."""
+        payload = data.get("payload", {})
+        request_id = payload.get("requestId")
+
+        if not request_id:
+            logger.warning("chat_stream_token missing requestId")
+            return
+
+        queue = self._pending_chat_requests.get(request_id)
+        if not queue:
+            logger.debug(f"No pending chat request for {request_id[:8]}...")
+            return
+
+        # Put token in queue
+        await queue.put({
+            "type": "token",
+            "token": payload.get("t", ""),
+            "index": payload.get("index", 0),
+        })
+
+    async def _handle_chat_stream_done(self, data: dict):
+        """Handle a chat_stream_done message from the backend."""
+        payload = data.get("payload", {})
+        request_id = payload.get("requestId")
+
+        if not request_id:
+            logger.warning("chat_stream_done missing requestId")
+            return
+
+        queue = self._pending_chat_requests.pop(request_id, None)
+        if not queue:
+            logger.debug(f"No pending chat request for {request_id[:8]}...")
+            return
+
+        # Check for error
+        if payload.get("errorMessage"):
+            await queue.put({
+                "type": "error",
+                "error": payload.get("errorMessage"),
+            })
+        else:
+            # Put completion in queue
+            await queue.put({
+                "type": "done",
+                "data": {
+                    "speech": payload.get("speech", ""),
+                    "thoughts": payload.get("thoughts", ""),
+                    "citations": payload.get("citations", []),
+                    "verified": payload.get("verified", False),
+                    "retries": payload.get("retries", 0),
+                    "latency_ms": payload.get("latencyMs", 0),
+                },
+            })
+
+        self._log(
+            f"Chat response received: {request_id[:8]}... "
+            f"(verified: {payload.get('verified', False)})",
+            "success" if payload.get("verified") else "warn",
+        )
 
     def _intent_to_llm_request(self, payload: dict) -> dict:
         """Convert backend IntentRequest to LLM request format."""
