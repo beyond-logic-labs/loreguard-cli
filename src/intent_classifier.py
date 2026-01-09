@@ -12,6 +12,7 @@ providing fast inference (50-100ms).
 """
 
 import logging
+import threading
 from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional, Tuple
@@ -64,6 +65,7 @@ class IntentClassifier:
         self._classifier = None
         self._model_path = model_path or DEFAULT_INTENT_MODEL
         self._device = None
+        self._load_lock = threading.Lock()  # Protect lazy loading from race conditions
 
     @property
     def model_name(self) -> str:
@@ -85,32 +87,41 @@ class IntentClassifier:
     def load_model(self) -> bool:
         """Load the classification model.
 
+        Thread-safe: uses lock to prevent concurrent model loading which could
+        cause memory issues or race conditions.
+
         Returns:
             True if model loaded successfully, False otherwise.
         """
+        # Fast path: already loaded
         if self._classifier is not None:
             return True
 
-        try:
-            from transformers import pipeline
+        with self._load_lock:
+            # Double-check after acquiring lock
+            if self._classifier is not None:
+                return True
 
-            self._device = self._resolve_device()
-            logger.info(f"Loading intent classifier: {self._model_path} (device={self._device})")
+            try:
+                from transformers import pipeline
 
-            # Use zero-shot-classification pipeline
-            device_idx = 0 if self._device == "cuda" else -1 if self._device == "cpu" else 0
-            self._classifier = pipeline(
-                "zero-shot-classification",
-                model=self._model_path,
-                device=device_idx if self._device != "mps" else "mps",
-            )
+                self._device = self._resolve_device()
+                logger.info(f"Loading intent classifier: {self._model_path} (device={self._device})")
 
-            logger.info("Intent classifier loaded successfully")
-            return True
+                # Use zero-shot-classification pipeline
+                device_idx = 0 if self._device == "cuda" else -1 if self._device == "cpu" else 0
+                self._classifier = pipeline(
+                    "zero-shot-classification",
+                    model=self._model_path,
+                    device=device_idx if self._device != "mps" else "mps",
+                )
 
-        except Exception as e:
-            logger.error(f"Failed to load intent classifier: {e}")
-            return False
+                logger.info("Intent classifier loaded successfully")
+                return True
+
+            except Exception as e:
+                logger.error(f"Failed to load intent classifier: {e}")
+                return False
 
     def classify(self, query: str) -> IntentResult:
         """Classify the intent of a user query.

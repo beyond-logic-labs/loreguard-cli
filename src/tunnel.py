@@ -695,12 +695,18 @@ class BackendTunnel:
             return
 
         query = payload.get("query", "")
+        timeout_ms = payload.get("timeoutMs", 1000)  # Default 1s for classification
+        timeout_s = timeout_ms / 1000.0
 
         self._log(f"Intent classify request {request_id[:8]}...", "info")
         start_time = time.time()
 
         try:
-            result = self.intent_classifier.classify(query)
+            # Run classification with timeout to avoid blocking WS loop
+            result = await asyncio.wait_for(
+                asyncio.to_thread(self.intent_classifier.classify, query),
+                timeout=timeout_s
+            )
             latency_ms = int((time.time() - start_time) * 1000)
 
             await self._send({
@@ -719,6 +725,24 @@ class BackendTunnel:
                 },
             })
             self._log(f"Intent classify response: {result.intent.value} ({latency_ms}ms)", "success")
+
+        except asyncio.TimeoutError:
+            latency_ms = int((time.time() - start_time) * 1000)
+            self._log(f"Intent classify timeout after {latency_ms}ms (limit: {timeout_ms}ms)", "warning")
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "intent_classify_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
+                    "errorMessage": f"Classification timeout ({timeout_ms}ms)",
+                },
+            })
 
         except Exception as e:
             logger.exception("Intent classification error")
