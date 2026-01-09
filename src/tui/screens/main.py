@@ -7,13 +7,14 @@ from typing import TYPE_CHECKING
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import Footer, Static
+from textual.widgets import Static
 from textual.containers import Container
 
 from ..widgets.banner import LoreguardBanner
 from ..widgets.hardware_info import HardwareInfo
 from ..widgets.server_monitor import ServerMonitor
 from ..widgets.npc_chat import NPCChat
+from ..widgets.footer import LoreguardFooter
 from ...config import LoreguardConfig
 
 if TYPE_CHECKING:
@@ -122,7 +123,7 @@ class MainScreen(Screen):
             yield Static("", id="main-status")
         yield NPCChat()
         yield ServerMonitor()
-        yield Footer()
+        yield LoreguardFooter()
 
     def on_mount(self) -> None:
         """Check for saved config or show auth modal."""

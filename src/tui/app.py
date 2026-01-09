@@ -5,6 +5,7 @@ from typing import Optional, Any
 
 from textual.app import App
 from textual.binding import Binding
+from textual import events
 from textual.driver import Driver
 
 from .styles import LOREGUARD_CSS
@@ -40,7 +41,7 @@ class LoreguardApp(App):
     _tunnel: Any = None
 
     def get_driver_class(self) -> type[Driver]:
-        """Return a driver class with mouse reporting disabled."""
+        """Return a driver class that ignores mouse events."""
         base_driver = super().get_driver_class()
         if getattr(base_driver, "_LOREGUARD_NO_MOUSE", False):
             return base_driver
@@ -48,8 +49,26 @@ class LoreguardApp(App):
         class NoMouseDriver(base_driver):
             _LOREGUARD_NO_MOUSE = True
 
-            def _enable_mouse_support(self) -> None:
-                return None
+            def start_application_mode(self) -> None:
+                super().start_application_mode()
+                if hasattr(self, "_disable_mouse_support"):
+                    self._disable_mouse_support()
+                if hasattr(self, "write"):
+                    self.write("\x1b[?1007h")  # Alternate scroll mode
+                if hasattr(self, "flush"):
+                    self.flush()
+
+            def stop_application_mode(self) -> None:
+                if hasattr(self, "write"):
+                    self.write("\x1b[?1007l")
+                if hasattr(self, "flush"):
+                    self.flush()
+                super().stop_application_mode()
+
+            def process_event(self, event: events.Event) -> None:
+                if isinstance(event, events.MouseEvent):
+                    return
+                super().process_event(event)
 
         return NoMouseDriver
 

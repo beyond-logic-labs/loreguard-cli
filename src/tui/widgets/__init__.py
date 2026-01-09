@@ -5,5 +5,13 @@ from .hardware_info import HardwareInfo
 from .status_panel import StatusPanel
 from .server_monitor import ServerMonitor
 from .npc_chat import NPCChat
+from .footer import LoreguardFooter
 
-__all__ = ["LoreguardBanner", "HardwareInfo", "StatusPanel", "ServerMonitor", "NPCChat"]
+__all__ = [
+    "LoreguardBanner",
+    "HardwareInfo",
+    "StatusPanel",
+    "ServerMonitor",
+    "NPCChat",
+    "LoreguardFooter",
+]

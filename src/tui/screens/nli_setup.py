@@ -6,12 +6,13 @@ from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
 from textual.screen import Screen
-from textual.widgets import Footer, Static, ProgressBar
+from textual.widgets import Static, ProgressBar
 from textual.containers import Center, Vertical
 from rich.text import Text
 
 from ..widgets.banner import LoreguardBanner
 from ..widgets.hardware_info import HardwareInfo
+from ..widgets.footer import LoreguardFooter
 from ..styles import CYAN, GREEN, YELLOW, RED
 
 if TYPE_CHECKING:
@@ -35,7 +36,7 @@ class NLISetupScreen(Screen):
                 id="nli-container",
             )
         )
-        yield Footer()
+        yield LoreguardFooter()
 
     def on_mount(self) -> None:
         """Start NLI setup on mount."""

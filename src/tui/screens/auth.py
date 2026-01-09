@@ -8,12 +8,13 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Center, Vertical
 from textual.screen import Screen
-from textual.widgets import Footer, Static, ListView, ListItem, Label
+from textual.widgets import Static, ListView, ListItem, Label
 from textual.worker import Worker, get_current_worker
 from rich.text import Text
 
 from ..widgets.banner import LoreguardBanner
 from ..widgets.hardware_info import HardwareInfo
+from ..widgets.footer import LoreguardFooter
 from ..styles import CYAN, PINK, GREEN, RED, FG_DIM
 
 if TYPE_CHECKING:
@@ -49,7 +50,7 @@ class AuthScreen(Screen):
             )
         )
         yield Static("", id="status-message")
-        yield Footer()
+        yield LoreguardFooter()
 
     def on_mount(self) -> None:
         """Focus the menu on mount."""

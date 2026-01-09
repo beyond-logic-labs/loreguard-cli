@@ -1138,15 +1138,15 @@ async def step_nli_setup(app: Optional[TUIApp] = None) -> bool:
     import concurrent.futures
 
     if app:
-        app.draw(Text("→ Checking NLI model...", style=Theme.INFO), title="Step 3/4: NLI Model Setup")
+        app.draw(Text("→ Checking NLI model...", style=Theme.INFO), title="Step 3/5: NLI Model Setup")
 
     if is_nli_model_available():
         if app:
-            app.draw(Text("✓ NLI model ready", style=Theme.SUCCESS), title="Step 3/4: NLI Model Setup")
+            app.draw(Text("✓ NLI model ready", style=Theme.SUCCESS), title="Step 3/5: NLI Model Setup")
         return True
 
     if app:
-        app.draw(Text("→ Downloading NLI model (~1.4GB)...", style=Theme.INFO), title="Step 3/4: NLI Model Setup")
+        app.draw(Text("→ Downloading NLI model (~1.4GB)...", style=Theme.INFO), title="Step 3/5: NLI Model Setup")
 
     try:
         # Run sync download in thread to not block
@@ -1156,16 +1156,53 @@ async def step_nli_setup(app: Optional[TUIApp] = None) -> bool:
 
         if success:
             if app:
-                app.draw(Text("✓ NLI model ready", style=Theme.SUCCESS), title="Step 3/4: NLI Model Setup")
+                app.draw(Text("✓ NLI model ready", style=Theme.SUCCESS), title="Step 3/5: NLI Model Setup")
         else:
             if app:
-                app.draw(Text("! NLI download failed - continuing without", style=Theme.WARNING), title="Step 3/4: NLI Model Setup")
+                app.draw(Text("! NLI download failed - continuing without", style=Theme.WARNING), title="Step 3/5: NLI Model Setup")
 
         return success
 
     except Exception as e:
         if app:
-            app.draw(Text(f"! NLI setup failed: {e}", style=Theme.WARNING), title="Step 3/4: NLI Model Setup")
+            app.draw(Text(f"! NLI setup failed: {e}", style=Theme.WARNING), title="Step 3/5: NLI Model Setup")
+        return False
+
+
+async def step_intent_setup(app: Optional[TUIApp] = None) -> bool:
+    """Step 4: Intent classification model setup (ADR-0010)."""
+    from .intent_classifier import is_intent_model_available, download_intent_model
+    import concurrent.futures
+
+    if app:
+        app.draw(Text("→ Checking intent model...", style=Theme.INFO), title="Step 4/5: Intent Model Setup")
+
+    if is_intent_model_available():
+        if app:
+            app.draw(Text("✓ Intent model ready", style=Theme.SUCCESS), title="Step 4/5: Intent Model Setup")
+        return True
+
+    if app:
+        app.draw(Text("→ Downloading intent model (~400MB)...", style=Theme.INFO), title="Step 4/5: Intent Model Setup")
+
+    try:
+        # Run sync download in thread to not block
+        loop = asyncio.get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            success = await loop.run_in_executor(pool, download_intent_model)
+
+        if success:
+            if app:
+                app.draw(Text("✓ Intent model ready", style=Theme.SUCCESS), title="Step 4/5: Intent Model Setup")
+        else:
+            if app:
+                app.draw(Text("! Intent download failed - continuing without", style=Theme.WARNING), title="Step 4/5: Intent Model Setup")
+
+        return success
+
+    except Exception as e:
+        if app:
+            app.draw(Text(f"! Intent setup failed: {e}", style=Theme.WARNING), title="Step 4/5: Intent Model Setup")
         return False
 
 
@@ -1175,9 +1212,10 @@ async def step_start(
     worker_id: str,
     dev_mode: bool,
     nli_enabled: bool = True,
+    intent_enabled: bool = True,
     app: Optional[TUIApp] = None,
 ) -> int:
-    """Step 4: Start services."""
+    """Step 5: Start services."""
     from .llama_server import LlamaServerProcess, is_llama_server_installed, download_llama_server, DownloadProgress
 
     # Create status panel that renders inside the TUIApp
@@ -1241,6 +1279,21 @@ async def step_start(
                     status.set_line("nli", "NLI", "✗ Failed")
                     nli_service = None
 
+            # Initialize intent classifier (ADR-0010)
+            intent_classifier = None
+            if intent_enabled:
+                status.set_line("intent", "Intent", "Loading...")
+                from .intent_classifier import IntentClassifier
+                intent_classifier = IntentClassifier()
+                # Suppress transformers/pytorch warnings during model loading
+                with suppress_external_output():
+                    model_loaded = intent_classifier.load_model()
+                if model_loaded:
+                    status.set_line("intent", "Intent", f"✓ Ready ({intent_classifier.device})")
+                else:
+                    status.set_line("intent", "Intent", "✗ Failed")
+                    intent_classifier = None
+
             model_id = _resolve_backend_model_id(model_path.stem)
             tunnel = BackendTunnel(
                 backend_url="wss://api.loreguard.com/workers",
@@ -1249,6 +1302,7 @@ async def step_start(
                 worker_token=token,
                 model_id=model_id,
                 nli_service=nli_service,
+                intent_classifier=intent_classifier,
                 log_callback=status.log,
             )
             asyncio.create_task(tunnel.connect())
@@ -1381,7 +1435,10 @@ async def run_wizard() -> int:
         nli_enabled = await step_nli_setup(app)
 
         # Step 4
-        return await step_start(model_path, token, worker_id, dev_mode, nli_enabled, app)
+        intent_enabled = await step_intent_setup(app)
+
+        # Step 5
+        return await step_start(model_path, token, worker_id, dev_mode, nli_enabled, intent_enabled, app)
 
     except KeyboardInterrupt:
         return 1

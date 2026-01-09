@@ -8,11 +8,12 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Center, Vertical
 from textual.screen import Screen
-from textual.widgets import Footer, Static, ListView, ListItem, Label, Input, ProgressBar
+from textual.widgets import Static, ListView, ListItem, Label, Input, ProgressBar
 from rich.text import Text
 
 from ..widgets.banner import LoreguardBanner
 from ..widgets.hardware_info import HardwareInfo, HardwareData, detect_hardware
+from ..widgets.footer import LoreguardFooter
 from ..styles import CYAN, PINK, GREEN, YELLOW, RED, FG_DIM, FG
 
 if TYPE_CHECKING:
@@ -52,7 +53,7 @@ class ModelSelectScreen(Screen):
         )
         yield Static("", id="status-message")
         yield ProgressBar(id="download-progress", show_percentage=True)
-        yield Footer()
+        yield LoreguardFooter()
 
     def on_mount(self) -> None:
         """Load models and focus the filter."""

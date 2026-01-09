@@ -59,6 +59,11 @@ class NLIService:
         self._max_length = 512
         self._label_order = None
 
+    @property
+    def model_name(self) -> str:
+        """Return the configured model identifier."""
+        return self._model_path
+
     def _resolve_device(self) -> str:
         """Resolve the best available device."""
         try:

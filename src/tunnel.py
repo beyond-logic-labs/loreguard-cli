@@ -23,6 +23,7 @@ from .llm import LLMProxy
 
 if TYPE_CHECKING:
     from .nli import NLIService
+    from .intent_classifier import IntentClassifier
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -55,6 +56,7 @@ class BackendTunnel:
         worker_token: str,
         model_id: str = "default",
         nli_service: Optional["NLIService"] = None,
+        intent_classifier: Optional["IntentClassifier"] = None,
         log_callback: Callable[[str, str], None] | None = None,
         max_retries: int = -1,  # -1 = infinite retries, 0 = no retries (single try)
     ):
@@ -64,6 +66,7 @@ class BackendTunnel:
         self.worker_token = worker_token
         self.model_id = model_id
         self.nli_service = nli_service
+        self.intent_classifier = intent_classifier  # ADR-0010: Intent classification
         self.log_callback = log_callback
         self.max_retries = max_retries
 
@@ -240,6 +243,9 @@ class BackendTunnel:
         if self.nli_service is not None and self.nli_service.is_loaded:
             capabilities.append("nli")
             self._log("NLI capability enabled", "info")
+        if self.intent_classifier is not None and self.intent_classifier.is_loaded:
+            capabilities.append("intent")
+            self._log("Intent classification capability enabled (ADR-0010)", "info")
 
         # Build registration message
         register_msg = {
@@ -383,6 +389,10 @@ class BackendTunnel:
         if msg_type == "intent_request":
             # Backend wants us to run an LLM query
             await self._handle_intent_request(data)
+
+        elif msg_type == "intent_classify_request":
+            # Backend wants us to classify user intent (ADR-0010)
+            await self._handle_intent_classify_request(data)
 
         elif msg_type == "nli_request":
             # Backend wants us to run NLI verification
@@ -654,6 +664,76 @@ class BackendTunnel:
                     "content": "",
                     "tokenCount": 0,
                     "latencyMs": latency_ms,
+                    "errorMessage": str(e),
+                },
+            })
+
+    async def _handle_intent_classify_request(self, data: dict):
+        """Handle an intent classification request from the backend (ADR-0010)."""
+        payload = data.get("payload", {})
+        request_id = payload.get("requestId")
+        trace_id = data.get("traceId", "")
+
+        if not request_id:
+            self._log("Intent classify request missing requestId", "error")
+            return
+
+        if not self.intent_classifier:
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "intent_classify_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
+                    "errorMessage": "Intent classifier not available",
+                },
+            })
+            return
+
+        query = payload.get("query", "")
+
+        self._log(f"Intent classify request {request_id[:8]}...", "info")
+        start_time = time.time()
+
+        try:
+            result = self.intent_classifier.classify(query)
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "intent_classify_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": True,
+                    "intent": result.intent.value,
+                    "confidence": result.confidence,
+                    "latencyMs": latency_ms,
+                },
+            })
+            self._log(f"Intent classify response: {result.intent.value} ({latency_ms}ms)", "success")
+
+        except Exception as e:
+            logger.exception("Intent classification error")
+            self._log(f"Intent classify error: {e}", "error")
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "intent_classify_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
                     "errorMessage": str(e),
                 },
             })

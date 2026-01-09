@@ -146,24 +146,29 @@ class NPCChatModal(ModalScreen[None]):
         self._messages.append({"role": "user", "content": content})
         self._add_message("user", content)
 
-    def action_send(self) -> None:
-        """Send the message."""
+    def _submit_message(self, input_widget: Input) -> None:
+        """Submit a chat message from the input widget."""
         if self._generating:
             return
 
-        input_widget = self.query_one("#chat-input", Input)
         message = input_widget.value.strip()
-
         if not message:
             return
 
-        input_widget.value = ""
+        input_widget.clear()
+        input_widget.cursor_position = 0
+        input_widget.focus()
         self._add_user_message(message)
         self._generate_response(message)
 
+    def action_send(self) -> None:
+        """Send the message."""
+        input_widget = self.query_one("#chat-input", Input)
+        self._submit_message(input_widget)
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle input submission."""
-        self.action_send()
+        self._submit_message(event.input)
 
     def _generate_response(self, user_message: str) -> None:
         """Generate NPC response using local LLM."""

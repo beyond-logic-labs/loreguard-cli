@@ -33,6 +33,7 @@ from .tunnel import BackendTunnel
 from .llm import LLMProxy
 from .config import get_config_value
 from .nli import NLIService, is_nli_model_available
+from .intent_classifier import IntentClassifier, is_intent_model_available
 
 load_dotenv()
 
@@ -54,12 +55,13 @@ app = FastAPI(
 tunnel: BackendTunnel | None = None
 llm_proxy: LLMProxy | None = None
 nli_service: NLIService | None = None
+intent_classifier: IntentClassifier | None = None
 
 
 @app.on_event("startup")
 async def startup():
     """Initialize connections on startup."""
-    global tunnel, llm_proxy, nli_service
+    global tunnel, llm_proxy, nli_service, intent_classifier
 
     # Note: runtime.json is written by run() before hypercorn starts
     # (socket is already bound at that point)
@@ -92,6 +94,20 @@ async def startup():
     else:
         console.print("[yellow]NLI service disabled (set LOREGUARD_NLI_ENABLED=true to enable)[/yellow]")
 
+    # Initialize intent classifier (ADR-0010 - optional, for adaptive retrieval)
+    enable_intent = os.getenv("LOREGUARD_INTENT_ENABLED", "true").lower() == "true"
+    if enable_intent:
+        console.print("[cyan]Initializing intent classifier...[/cyan]")
+        intent_classifier = IntentClassifier()
+        if intent_classifier.load_model():
+            console.print(f"[green]Intent classifier ready (device: {intent_classifier.device})[/green]")
+        else:
+            console.print("[yellow]Warning: Intent model failed to load[/yellow]")
+            console.print("[yellow]  Intent classification will be disabled[/yellow]")
+            intent_classifier = None
+    else:
+        console.print("[yellow]Intent classifier disabled (set LOREGUARD_INTENT_ENABLED=true to enable)[/yellow]")
+
     # Connect to remote backend
     backend_url = get_config_value("BACKEND_URL", "wss://api.lorekeeper.ai/workers")
     worker_id = get_config_value("WORKER_ID", "")
@@ -104,6 +120,7 @@ async def startup():
         tunnel = BackendTunnel(
             backend_url, llm_proxy, worker_id, worker_token, model_id,
             nli_service=nli_service,
+            intent_classifier=intent_classifier,
         )
         asyncio.create_task(tunnel.connect())
     elif backend_url:
