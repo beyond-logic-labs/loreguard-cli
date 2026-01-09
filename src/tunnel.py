@@ -695,7 +695,7 @@ class BackendTunnel:
             return
 
         query = payload.get("query", "")
-        timeout_ms = payload.get("timeoutMs", 1000)  # Default 1s for classification
+        timeout_ms = payload.get("timeoutMs", 5000)  # Default 5s, allows cold start model loading
         timeout_s = timeout_ms / 1000.0
 
         self._log(f"Intent classify request {request_id[:8]}...", "info")
