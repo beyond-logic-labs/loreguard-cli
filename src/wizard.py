@@ -1134,19 +1134,21 @@ async def step_model_selection(hardware: Optional[HardwareInfo], app: Optional[T
 
 async def step_nli_setup(app: Optional[TUIApp] = None) -> bool:
     """Step 3: NLI setup."""
-    from .nli import is_nli_model_available, download_nli_model
+    from .nli import is_nli_model_available, download_nli_model, get_nli_model_info
     import concurrent.futures
+
+    info = get_nli_model_info()
 
     if app:
         app.draw(Text("→ Checking NLI model...", style=Theme.INFO), title="Step 3/5: NLI Model Setup")
 
     if is_nli_model_available():
         if app:
-            app.draw(Text("✓ NLI model ready", style=Theme.SUCCESS), title="Step 3/5: NLI Model Setup")
+            app.draw(Text(f"✓ {info['name']} ready", style=Theme.SUCCESS), title="Step 3/5: NLI Model Setup")
         return True
 
     if app:
-        app.draw(Text("→ Downloading NLI model (~1.4GB)...", style=Theme.INFO), title="Step 3/5: NLI Model Setup")
+        app.draw(Text(f"→ Downloading {info['name']} (~{info['size_mb']}MB)...\n  From: {info['url']}", style=Theme.INFO), title="Step 3/5: NLI Model Setup")
 
     try:
         # Run sync download in thread to not block
@@ -1156,7 +1158,7 @@ async def step_nli_setup(app: Optional[TUIApp] = None) -> bool:
 
         if success:
             if app:
-                app.draw(Text("✓ NLI model ready", style=Theme.SUCCESS), title="Step 3/5: NLI Model Setup")
+                app.draw(Text(f"✓ {info['name']} ready", style=Theme.SUCCESS), title="Step 3/5: NLI Model Setup")
         else:
             if app:
                 app.draw(Text("! NLI download failed - continuing without", style=Theme.WARNING), title="Step 3/5: NLI Model Setup")
@@ -1171,19 +1173,21 @@ async def step_nli_setup(app: Optional[TUIApp] = None) -> bool:
 
 async def step_intent_setup(app: Optional[TUIApp] = None) -> bool:
     """Step 4: Intent classification model setup (ADR-0010)."""
-    from .intent_classifier import is_intent_model_available, download_intent_model
+    from .intent_classifier import is_intent_model_available, download_intent_model, get_intent_model_info
     import concurrent.futures
+
+    info = get_intent_model_info()
 
     if app:
         app.draw(Text("→ Checking intent model...", style=Theme.INFO), title="Step 4/5: Intent Model Setup")
 
     if is_intent_model_available():
         if app:
-            app.draw(Text("✓ Intent model ready", style=Theme.SUCCESS), title="Step 4/5: Intent Model Setup")
+            app.draw(Text(f"✓ {info['name']} ready", style=Theme.SUCCESS), title="Step 4/5: Intent Model Setup")
         return True
 
     if app:
-        app.draw(Text("→ Downloading intent model (~400MB)...", style=Theme.INFO), title="Step 4/5: Intent Model Setup")
+        app.draw(Text(f"→ Downloading {info['name']} (~{info['size_mb']}MB)...\n  From: {info['url']}", style=Theme.INFO), title="Step 4/5: Intent Model Setup")
 
     try:
         # Run sync download in thread to not block
@@ -1193,7 +1197,7 @@ async def step_intent_setup(app: Optional[TUIApp] = None) -> bool:
 
         if success:
             if app:
-                app.draw(Text("✓ Intent model ready", style=Theme.SUCCESS), title="Step 4/5: Intent Model Setup")
+                app.draw(Text(f"✓ {info['name']} ready", style=Theme.SUCCESS), title="Step 4/5: Intent Model Setup")
         else:
             if app:
                 app.draw(Text("! Intent download failed - continuing without", style=Theme.WARNING), title="Step 4/5: Intent Model Setup")

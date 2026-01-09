@@ -294,8 +294,15 @@ class EmbeddedHTTPServer:
             body = await request.json()
             history = body.get("history") or body.get("context") or []
             player_handle = body.get("player_handle", body.get("playerHandle", ""))
+            character_id = body.get("character_id", body.get("characterId", ""))
+            current_context = body.get("current_context", body.get("currentContext", ""))
+            enable_thinking = body.get("enable_thinking", body.get("enableThinking", False))
             accept = request.headers.get("accept", "")
             streaming = "text/event-stream" in accept
+
+            # Extract API token from Authorization header for backend auth
+            auth_header = request.headers.get("authorization", "")
+            api_token = auth_header.replace("Bearer ", "") if auth_header.startswith("Bearer ") else ""
 
             request_id = str(uuid.uuid4())
 
@@ -305,13 +312,14 @@ class EmbeddedHTTPServer:
                     future = server._call_on_main_loop(
                         server.tunnel.send_chat_request(
                             request_id=request_id,
-                            character_id=body.get("character_id", ""),
+                            character_id=character_id,
                             message=body.get("message", ""),
                             player_handle=player_handle,
-                            current_context=body.get("current_context", body.get("currentContext", "")),
+                            current_context=current_context,
                             history=history,
-                            enable_thinking=body.get("enable_thinking", False),
+                            enable_thinking=enable_thinking,
                             verbose=body.get("verbose", False),
+                            api_token=api_token,
                         )
                     )
                     # Wait for the result
@@ -324,13 +332,14 @@ class EmbeddedHTTPServer:
                 # Fallback: direct await (same loop - standalone mode)
                 response_queue = await server.tunnel.send_chat_request(
                     request_id=request_id,
-                    character_id=body.get("character_id", ""),
+                    character_id=character_id,
                     message=body.get("message", ""),
                     player_handle=player_handle,
-                    current_context=body.get("current_context", ""),
+                    current_context=current_context,
                     history=history,
-                    enable_thinking=body.get("enable_thinking", False),
+                    enable_thinking=enable_thinking,
                     verbose=body.get("verbose", False),
+                    api_token=api_token,
                 )
 
             if streaming:

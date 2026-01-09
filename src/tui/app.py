@@ -51,23 +51,18 @@ class LoreguardApp(App):
 
             def start_application_mode(self) -> None:
                 super().start_application_mode()
-                if hasattr(self, "_disable_mouse_support"):
-                    self._disable_mouse_support()
-                if hasattr(self, "write"):
-                    self.write("\x1b[?1007h")  # Alternate scroll mode
-                if hasattr(self, "flush"):
-                    self.flush()
+                # Note: Mouse support stays enabled for scroll events
+                # Click events are filtered in process_event()
+                # Text selection: use Shift+click in most terminals
 
             def stop_application_mode(self) -> None:
-                if hasattr(self, "write"):
-                    self.write("\x1b[?1007l")
-                if hasattr(self, "flush"):
-                    self.flush()
                 super().stop_application_mode()
 
             def process_event(self, event: events.Event) -> None:
                 if isinstance(event, events.MouseEvent):
-                    return
+                    # Allow scroll events for scrolling, block others for text selection
+                    if not isinstance(event, (events.MouseScrollDown, events.MouseScrollUp)):
+                        return
                 super().process_event(event)
 
         return NoMouseDriver

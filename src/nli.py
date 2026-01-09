@@ -33,7 +33,8 @@ class NLIResult:
 
 
 # Default model for NLI verification
-DEFAULT_NLI_MODEL = "roberta-large-mnli"
+# Using ANLI-trained model for better robustness
+DEFAULT_NLI_MODEL = "ynie/roberta-large-snli_mnli_fever_anli_R1_R2_R3-nli"
 
 
 class NLIService:
@@ -284,14 +285,31 @@ def download_nli_model() -> bool:
         True if download successful, False otherwise.
     """
     try:
-        from transformers import AutoTokenizer, AutoModelForSequenceClassification
+        from huggingface_hub import snapshot_download
 
         logger.info(f"Downloading NLI model: {DEFAULT_NLI_MODEL}")
-        # Download tokenizer and model (cached automatically)
-        AutoTokenizer.from_pretrained(DEFAULT_NLI_MODEL)
-        AutoModelForSequenceClassification.from_pretrained(DEFAULT_NLI_MODEL)
+        logger.info(f"Source: https://huggingface.co/{DEFAULT_NLI_MODEL}")
+
+        # Use snapshot_download for the full model
+        snapshot_download(DEFAULT_NLI_MODEL, local_files_only=False)
+
         logger.info("NLI model downloaded successfully")
         return True
     except Exception as e:
         logger.error(f"Failed to download NLI model: {e}")
         return False
+
+
+def get_nli_model_info() -> dict:
+    """Get information about the NLI model.
+
+    Returns:
+        Dict with model info: name, url, size_mb
+    """
+    return {
+        "name": "RoBERTa-large-ANLI",
+        "model_id": DEFAULT_NLI_MODEL,
+        "url": f"https://huggingface.co/{DEFAULT_NLI_MODEL}",
+        "size_mb": 1400,  # Approximate size
+        "description": "ANLI-trained model for citation verification",
+    }

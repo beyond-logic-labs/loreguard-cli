@@ -204,34 +204,75 @@ class MainScreen(Screen):
         """Setup NLI model."""
         import asyncio
         import concurrent.futures
-        from ...nli import is_nli_model_available, download_nli_model
-        from ...wizard import suppress_external_output
+        from ...nli import is_nli_model_available, download_nli_model, get_nli_model_info
 
         if is_nli_model_available():
             self._update_status("NLI model ready")
-            await asyncio.sleep(0.5)
-            self._start_services()
+            await asyncio.sleep(0.3)
+            self._show_intent_setup()
             return
 
-        self._update_status("Downloading NLI model (~1.4GB)...")
+        # Show model info during download
+        info = get_nli_model_info()
+        self._update_status(f"Downloading {info['name']} (~{info['size_mb']}MB) from huggingface.co...")
 
         try:
             loop = asyncio.get_event_loop()
             with concurrent.futures.ThreadPoolExecutor() as pool:
-                with suppress_external_output():
-                    success = await loop.run_in_executor(pool, download_nli_model)
+                # Don't suppress - let HuggingFace show its progress
+                success = await loop.run_in_executor(pool, download_nli_model)
 
             if success:
                 self._update_status("NLI model ready")
             else:
                 self._update_status("NLI download failed - continuing without")
 
-            await asyncio.sleep(0.5)
-            self._start_services()
+            await asyncio.sleep(0.3)
+            self._show_intent_setup()
 
         except Exception as e:
             self._update_status(f"NLI setup failed: {e}")
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
+            self._show_intent_setup()
+
+    def _show_intent_setup(self) -> None:
+        """Show intent classifier setup (progress in status, not modal)."""
+        self._update_status("Setting up intent classifier...")
+        self.run_worker(self._do_intent_setup())
+
+    async def _do_intent_setup(self) -> None:
+        """Setup intent classifier model (ADR-0010)."""
+        import asyncio
+        import concurrent.futures
+        from ...intent_classifier import is_intent_model_available, download_intent_model, get_intent_model_info
+
+        if is_intent_model_available():
+            self._update_status("Intent model ready")
+            await asyncio.sleep(0.3)
+            self._start_services()
+            return
+
+        # Show model info during download
+        info = get_intent_model_info()
+        self._update_status(f"Downloading {info['name']} (~{info['size_mb']}MB) from huggingface.co...")
+
+        try:
+            loop = asyncio.get_event_loop()
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                # Don't suppress - let HuggingFace show its progress
+                success = await loop.run_in_executor(pool, download_intent_model)
+
+            if success:
+                self._update_status("Intent model ready")
+            else:
+                self._update_status("Intent download failed - continuing without")
+
+            await asyncio.sleep(0.3)
+            self._start_services()
+
+        except Exception as e:
+            self._update_status(f"Intent setup failed: {e}")
+            await asyncio.sleep(0.5)
             self._start_services()
 
     def _start_services(self) -> None:
@@ -289,6 +330,7 @@ class MainScreen(Screen):
         from ...tunnel import BackendTunnel
         from ...llm import LLMProxy
         from ...nli import NLIService
+        from ...intent_classifier import IntentClassifier
         from ...wizard import suppress_external_output
 
         app: "LoreguardApp" = self.app  # type: ignore
@@ -309,6 +351,17 @@ class MainScreen(Screen):
                     nli_service = None
             except Exception:
                 nli_service = None
+
+            # Load intent classifier (ADR-0010)
+            intent_classifier = None
+            try:
+                intent_classifier = IntentClassifier()
+                with suppress_external_output():
+                    model_loaded = intent_classifier.load_model()
+                if not model_loaded:
+                    intent_classifier = None
+            except Exception:
+                intent_classifier = None
 
             model_id = _resolve_backend_model_id(app.model_path.stem) if app.model_path else "unknown"
 
@@ -338,6 +391,7 @@ class MainScreen(Screen):
                 worker_token=app.api_token,
                 model_id=model_id,
                 nli_service=nli_service,
+                intent_classifier=intent_classifier,
                 log_callback=log_callback,
                 max_retries=0,  # Single try, no retries
             )

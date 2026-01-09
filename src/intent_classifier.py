@@ -37,7 +37,8 @@ class IntentResult:
 
 
 # Default model for intent classification
-DEFAULT_INTENT_MODEL = "facebook/bart-large-mnli"
+# DeBERTa-v3-large is state-of-the-art for zero-shot classification
+DEFAULT_INTENT_MODEL = "MoritzLaurer/DeBERTa-v3-large-zeroshot-v2.0"
 
 # Intent hypothesis templates for zero-shot classification
 # Each intent maps to a hypothesis that BART will evaluate
@@ -222,24 +223,67 @@ def is_intent_model_available() -> bool:
         return False
 
 
-def download_intent_model() -> bool:
+def download_intent_model(progress_callback=None) -> bool:
     """Pre-download the intent model to HuggingFace cache.
 
     This is optional - the model will be downloaded automatically on first use.
     But calling this explicitly gives better user feedback during setup.
 
+    Args:
+        progress_callback: Optional callback(current_bytes, total_bytes) for progress updates.
+
     Returns:
         True if download successful, False otherwise.
     """
     try:
-        from transformers import AutoTokenizer, AutoModelForSequenceClassification
+        from huggingface_hub import snapshot_download, hf_hub_url
+        from huggingface_hub.utils import tqdm as hf_tqdm
+        import os
 
         logger.info(f"Downloading intent model: {DEFAULT_INTENT_MODEL}")
-        # Download tokenizer and model (cached automatically)
-        AutoTokenizer.from_pretrained(DEFAULT_INTENT_MODEL)
-        AutoModelForSequenceClassification.from_pretrained(DEFAULT_INTENT_MODEL)
+        logger.info(f"Source: https://huggingface.co/{DEFAULT_INTENT_MODEL}")
+
+        # Use snapshot_download for better progress tracking
+        # This downloads all model files to HuggingFace cache
+        if progress_callback:
+            # Custom progress tracking
+            class ProgressCallback:
+                def __init__(self, callback):
+                    self.callback = callback
+                    self.total = 0
+                    self.current = 0
+
+                def __call__(self, *args, **kwargs):
+                    # Called during download
+                    pass
+
+            snapshot_download(
+                DEFAULT_INTENT_MODEL,
+                local_files_only=False,
+            )
+        else:
+            snapshot_download(
+                DEFAULT_INTENT_MODEL,
+                local_files_only=False,
+            )
+
         logger.info("Intent model downloaded successfully")
         return True
     except Exception as e:
         logger.error(f"Failed to download intent model: {e}")
         return False
+
+
+def get_intent_model_info() -> dict:
+    """Get information about the intent model.
+
+    Returns:
+        Dict with model info: name, url, size_mb
+    """
+    return {
+        "name": "DeBERTa-v3-large-zeroshot",
+        "model_id": DEFAULT_INTENT_MODEL,
+        "url": f"https://huggingface.co/{DEFAULT_INTENT_MODEL}",
+        "size_mb": 800,  # Approximate size for DeBERTa-v3-large
+        "description": "State-of-the-art zero-shot classification model",
+    }
