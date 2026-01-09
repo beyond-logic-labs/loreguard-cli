@@ -73,6 +73,7 @@ class BackendTunnel:
         self.ws: websockets.WebSocketClientProtocol | None = None
         self.connected = False
         self.registered = False
+        self.backend_version = ""  # Populated from worker_ack
         self._reconnect_delay = 1  # Start with 1 second
         self._max_reconnect_delay = 60  # Max 60 seconds
         self._running = True
@@ -279,7 +280,11 @@ class BackendTunnel:
                 payload = data.get("payload", {})
                 if payload.get("accepted"):
                     self.registered = True
+                    # Capture backend version if provided
+                    self.backend_version = payload.get("version", "")
                     self._log(f"Registered as worker: {self.worker_id}", "success")
+                    if self.backend_version:
+                        self._log(f"Backend version: {self.backend_version}", "info")
                     return True, ""
                 else:
                     reason = payload.get("reason", "unknown")
@@ -548,6 +553,12 @@ class BackendTunnel:
                 "temperature": payload.get("temperature", 0.7),
                 "timeout": payload.get("timeoutMs", 120000) / 1000,  # Convert to seconds
             }
+
+            # Pass through JSON output settings (ADR-0012: grammar-constrained JSON)
+            if payload.get("forceJsonOutput"):
+                llm_request["force_json"] = True
+                if payload.get("jsonSchema"):
+                    llm_request["json_schema"] = payload["jsonSchema"]
 
             # Stream tokens from LLM
             token_count = 0
@@ -931,6 +942,7 @@ class BackendTunnel:
         history: list[dict[str, Any]] | None = None,
         enable_thinking: bool = False,
         verbose: bool = False,
+        api_token: str = "",
     ) -> asyncio.Queue[dict[str, Any]]:
         """Send a chat request to the backend and return a queue for responses.
 
@@ -969,6 +981,7 @@ class BackendTunnel:
                 "enableThinking": enable_thinking,
                 "verbose": verbose,
                 "stream": True,  # Always streaming for SSE
+                "apiToken": api_token,  # For backend to authorize character access
             },
         })
 
@@ -1069,12 +1082,20 @@ class BackendTunnel:
                 "content": payload["prompt"],
             })
 
-        return {
+        request = {
             "messages": messages,
             "max_tokens": payload.get("maxTokens", 512),
             "temperature": payload.get("temperature", 0.7),
             "timeout": payload.get("timeoutMs", 120000) / 1000.0,  # Convert ms to seconds
         }
+
+        # Pass through JSON output settings (ADR-0012: grammar-constrained JSON)
+        if payload.get("forceJsonOutput"):
+            request["force_json"] = True
+            if payload.get("jsonSchema"):
+                request["json_schema"] = payload["jsonSchema"]
+
+        return request
 
     async def _send(self, data: dict):
         """Send a message to the backend."""
