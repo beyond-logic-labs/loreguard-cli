@@ -6,13 +6,14 @@ from typing import TYPE_CHECKING, Optional
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import Footer, Static, RichLog
+from textual.widgets import Static, RichLog
 from textual.containers import Vertical
 from textual.worker import Worker
 from rich.text import Text
 
 from ..widgets.banner import LoreguardBanner
 from ..widgets.hardware_info import HardwareInfo
+from ..widgets.footer import LoreguardFooter
 from ..styles import CYAN, GREEN, YELLOW, RED, FG_DIM
 
 if TYPE_CHECKING:
@@ -52,7 +53,7 @@ class RunningScreen(Screen):
         )
         yield Static("", classes="spacer")
         yield RichLog(id="activity-log", highlight=True, markup=True, wrap=True)
-        yield Footer()
+        yield LoreguardFooter()
 
     def on_mount(self) -> None:
         """Start services on mount."""

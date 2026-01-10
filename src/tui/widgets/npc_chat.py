@@ -242,21 +242,24 @@ class NPCChat(Vertical):
         self._messages.append({"role": "user", "content": content})
         self._add_message("user", content)
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Handle input submission."""
-        if event.input.id != "npc-chat-input":
-            return
-
+    def _submit_message(self, input_widget: Input) -> None:
+        """Submit a chat message from the input widget."""
         if self._generating:
             return
 
-        message = event.value.strip()
+        message = input_widget.value.strip()
         if not message:
             return
 
-        event.input.value = ""
+        input_widget.clear()
+        input_widget.cursor_position = 0
+        input_widget.focus()
         self._add_user_message(message)
         self._generate_response(message)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle input submission."""
+        self._submit_message(event.input)
 
     def _generate_response(self, user_message: str) -> None:
         """Generate NPC response using local LLM."""
@@ -299,14 +302,20 @@ class NPCChat(Vertical):
             except httpx.ConnectError as e:
                 # Local proxy not available, fall back to cloud API
                 local_url = get_local_proxy_url()
-                if local_url:
-                    status.update(Text(f"Local proxy failed ({local_url}): {e}, using cloud...", style=FG_DIM))
+                if self._verbose:
+                    if local_url:
+                        status.update(Text(f"Local proxy failed ({local_url}): {e}", style=FG_DIM))
+                    else:
+                        status.update(Text("No runtime.json found - SDK server not running", style=FG_DIM))
                 else:
-                    status.update(Text("No runtime.json found - SDK server not running, using cloud...", style=FG_DIM))
+                    status.update(Text("Local proxy unavailable, using cloud...", style=FG_DIM))
             except Exception as e:
                 # Other errors - show details and fall back
                 local_url = get_local_proxy_url()
-                status.update(Text(f"Local proxy error ({local_url}): {type(e).__name__}: {e}", style="#FF5555"))
+                if self._verbose:
+                    status.update(Text(f"Local proxy error ({local_url}): {type(e).__name__}: {e}", style="#FF5555"))
+                else:
+                    status.update(Text("Local proxy error, using cloud...", style=FG_DIM))
 
             # Fallback to cloud API (no streaming)
             await self._do_generate_cloud(payload, status)

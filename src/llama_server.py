@@ -22,7 +22,7 @@ from typing import AsyncGenerator, Callable, Optional
 
 import httpx
 
-LLAMA_VERSION = "b7472"
+LLAMA_VERSION = "b7662"  # Must match loreguard-engine bundle version
 
 # Download URLs for each platform
 BINARIES = {

@@ -23,6 +23,7 @@ from .llm import LLMProxy
 
 if TYPE_CHECKING:
     from .nli import NLIService
+    from .intent_classifier import IntentClassifier
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -55,6 +56,7 @@ class BackendTunnel:
         worker_token: str,
         model_id: str = "default",
         nli_service: Optional["NLIService"] = None,
+        intent_classifier: Optional["IntentClassifier"] = None,
         log_callback: Callable[[str, str], None] | None = None,
         max_retries: int = -1,  # -1 = infinite retries, 0 = no retries (single try)
     ):
@@ -64,12 +66,14 @@ class BackendTunnel:
         self.worker_token = worker_token
         self.model_id = model_id
         self.nli_service = nli_service
+        self.intent_classifier = intent_classifier  # ADR-0010: Intent classification
         self.log_callback = log_callback
         self.max_retries = max_retries
 
         self.ws: websockets.WebSocketClientProtocol | None = None
         self.connected = False
         self.registered = False
+        self.backend_version = ""  # Populated from worker_ack
         self._reconnect_delay = 1  # Start with 1 second
         self._max_reconnect_delay = 60  # Max 60 seconds
         self._running = True
@@ -240,6 +244,9 @@ class BackendTunnel:
         if self.nli_service is not None and self.nli_service.is_loaded:
             capabilities.append("nli")
             self._log("NLI capability enabled", "info")
+        if self.intent_classifier is not None and self.intent_classifier.is_loaded:
+            capabilities.append("intent")
+            self._log("Intent classification capability enabled (ADR-0010)", "info")
 
         # Build registration message
         register_msg = {
@@ -273,7 +280,11 @@ class BackendTunnel:
                 payload = data.get("payload", {})
                 if payload.get("accepted"):
                     self.registered = True
+                    # Capture backend version if provided
+                    self.backend_version = payload.get("version", "")
                     self._log(f"Registered as worker: {self.worker_id}", "success")
+                    if self.backend_version:
+                        self._log(f"Backend version: {self.backend_version}", "info")
                     return True, ""
                 else:
                     reason = payload.get("reason", "unknown")
@@ -383,6 +394,10 @@ class BackendTunnel:
         if msg_type == "intent_request":
             # Backend wants us to run an LLM query
             await self._handle_intent_request(data)
+
+        elif msg_type == "intent_classify_request":
+            # Backend wants us to classify user intent (ADR-0010)
+            await self._handle_intent_classify_request(data)
 
         elif msg_type == "nli_request":
             # Backend wants us to run NLI verification
@@ -539,6 +554,12 @@ class BackendTunnel:
                 "timeout": payload.get("timeoutMs", 120000) / 1000,  # Convert to seconds
             }
 
+            # Pass through JSON output settings (ADR-0012: grammar-constrained JSON)
+            if payload.get("forceJsonOutput"):
+                llm_request["force_json"] = True
+                if payload.get("jsonSchema"):
+                    llm_request["json_schema"] = payload["jsonSchema"]
+
             # Stream tokens from LLM
             token_count = 0
             content_parts = []
@@ -654,6 +675,100 @@ class BackendTunnel:
                     "content": "",
                     "tokenCount": 0,
                     "latencyMs": latency_ms,
+                    "errorMessage": str(e),
+                },
+            })
+
+    async def _handle_intent_classify_request(self, data: dict):
+        """Handle an intent classification request from the backend (ADR-0010)."""
+        payload = data.get("payload", {})
+        request_id = payload.get("requestId")
+        trace_id = data.get("traceId", "")
+
+        if not request_id:
+            self._log("Intent classify request missing requestId", "error")
+            return
+
+        if not self.intent_classifier:
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "intent_classify_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
+                    "errorMessage": "Intent classifier not available",
+                },
+            })
+            return
+
+        query = payload.get("query", "")
+        timeout_ms = payload.get("timeoutMs", 5000)  # Default 5s, allows cold start model loading
+        timeout_s = timeout_ms / 1000.0
+
+        self._log(f"Intent classify request {request_id[:8]}...", "info")
+        start_time = time.time()
+
+        try:
+            # Run classification with timeout to avoid blocking WS loop
+            result = await asyncio.wait_for(
+                asyncio.to_thread(self.intent_classifier.classify, query),
+                timeout=timeout_s
+            )
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "intent_classify_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": True,
+                    "intent": result.intent.value,
+                    "confidence": result.confidence,
+                    "latencyMs": latency_ms,
+                },
+            })
+            self._log(f"Intent classify response: {result.intent.value} ({latency_ms}ms)", "success")
+
+        except asyncio.TimeoutError:
+            latency_ms = int((time.time() - start_time) * 1000)
+            self._log(f"Intent classify timeout after {latency_ms}ms (limit: {timeout_ms}ms)", "warning")
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "intent_classify_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
+                    "errorMessage": f"Classification timeout ({timeout_ms}ms)",
+                },
+            })
+
+        except Exception as e:
+            logger.exception("Intent classification error")
+            self._log(f"Intent classify error: {e}", "error")
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "intent_classify_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
                     "errorMessage": str(e),
                 },
             })
@@ -827,6 +942,7 @@ class BackendTunnel:
         history: list[dict[str, Any]] | None = None,
         enable_thinking: bool = False,
         verbose: bool = False,
+        api_token: str = "",
     ) -> asyncio.Queue[dict[str, Any]]:
         """Send a chat request to the backend and return a queue for responses.
 
@@ -865,6 +981,7 @@ class BackendTunnel:
                 "enableThinking": enable_thinking,
                 "verbose": verbose,
                 "stream": True,  # Always streaming for SSE
+                "apiToken": api_token,  # For backend to authorize character access
             },
         })
 
@@ -965,12 +1082,20 @@ class BackendTunnel:
                 "content": payload["prompt"],
             })
 
-        return {
+        request = {
             "messages": messages,
             "max_tokens": payload.get("maxTokens", 512),
             "temperature": payload.get("temperature", 0.7),
             "timeout": payload.get("timeoutMs", 120000) / 1000.0,  # Convert ms to seconds
         }
+
+        # Pass through JSON output settings (ADR-0012: grammar-constrained JSON)
+        if payload.get("forceJsonOutput"):
+            request["force_json"] = True
+            if payload.get("jsonSchema"):
+                request["json_schema"] = payload["jsonSchema"]
+
+        return request
 
     async def _send(self, data: dict):
         """Send a message to the backend."""

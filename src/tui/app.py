@@ -5,6 +5,7 @@ from typing import Optional, Any
 
 from textual.app import App
 from textual.binding import Binding
+from textual import events
 from textual.driver import Driver
 
 from .styles import LOREGUARD_CSS
@@ -40,7 +41,7 @@ class LoreguardApp(App):
     _tunnel: Any = None
 
     def get_driver_class(self) -> type[Driver]:
-        """Return a driver class with mouse reporting disabled."""
+        """Return a driver class that ignores mouse events."""
         base_driver = super().get_driver_class()
         if getattr(base_driver, "_LOREGUARD_NO_MOUSE", False):
             return base_driver
@@ -48,8 +49,21 @@ class LoreguardApp(App):
         class NoMouseDriver(base_driver):
             _LOREGUARD_NO_MOUSE = True
 
-            def _enable_mouse_support(self) -> None:
-                return None
+            def start_application_mode(self) -> None:
+                super().start_application_mode()
+                # Note: Mouse support stays enabled for scroll events
+                # Click events are filtered in process_event()
+                # Text selection: use Shift+click in most terminals
+
+            def stop_application_mode(self) -> None:
+                super().stop_application_mode()
+
+            def process_event(self, event: events.Event) -> None:
+                if isinstance(event, events.MouseEvent):
+                    # Allow scroll events for scrolling, block others for text selection
+                    if not isinstance(event, (events.MouseScrollDown, events.MouseScrollUp)):
+                        return
+                super().process_event(event)
 
         return NoMouseDriver
 

@@ -76,8 +76,8 @@ class UnifiedPaletteModal(ModalScreen[tuple[str, Any] | None]):
     UnifiedPaletteModal Input {{
         border: tall #282A36;
         background: #282A36;
+        color: {FG};
         padding: 0 1;
-        height: 1;
     }}
 
     UnifiedPaletteModal Input:focus {{
