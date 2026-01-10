@@ -274,12 +274,16 @@ class LLMProxy:
         try:
             # Use a custom timeout for streaming:
             # - connect: 10 seconds (fail fast if server unreachable)
-            # - read: None (no timeout - tokens come intermittently)
+            # - read: 60 seconds (max time between tokens - prevents infinite hang)
             # - write: 30 seconds (sending the request)
             # - pool: 10 seconds (getting a connection from pool)
+            #
+            # Note: 60s read timeout is generous for slow models. If a token doesn't
+            # arrive within 60s, the LLM is likely hung. This prevents the pipeline
+            # from waiting forever when llama-server crashes mid-stream.
             stream_timeout = httpx.Timeout(
                 connect=10.0,
-                read=None,  # No read timeout for streaming
+                read=60.0,  # Max 60s between tokens (prevents infinite hang)
                 write=30.0,
                 pool=10.0,
             )
@@ -346,8 +350,10 @@ class LLMProxy:
                         break
 
         except httpx.TimeoutException:
-            logger.warning("LLM streaming timed out mid-stream")
-            yield {"type": "error", "error": "LLM streaming timed out"}
+            # Timeout between tokens (60s) - LLM likely hung
+            partial_content = "".join(accumulated_content)
+            logger.warning(f"LLM streaming timed out after {token_index} tokens ({len(partial_content)} chars)")
+            yield {"type": "error", "error": f"LLM streaming timed out after {token_index} tokens (no response for 60s)"}
             return
 
         # Process final content
