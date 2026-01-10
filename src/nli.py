@@ -275,28 +275,56 @@ def is_nli_model_available() -> bool:
         return False
 
 
-def download_nli_model() -> bool:
+def download_nli_model(progress_callback=None, error_callback=None) -> bool:
     """Pre-download the NLI model to HuggingFace cache.
 
     This is optional - the model will be downloaded automatically on first use.
     But calling this explicitly gives better user feedback during setup.
+
+    Args:
+        progress_callback: Optional callback(downloaded_mb, total_mb, filename) for progress updates.
+        error_callback: Optional callback(error_message) to report errors.
 
     Returns:
         True if download successful, False otherwise.
     """
     try:
         from huggingface_hub import snapshot_download
+        from tqdm import tqdm
 
         logger.info(f"Downloading NLI model: {DEFAULT_NLI_MODEL}")
         logger.info(f"Source: https://huggingface.co/{DEFAULT_NLI_MODEL}")
 
-        # Use snapshot_download for the full model
-        snapshot_download(DEFAULT_NLI_MODEL, local_files_only=False)
+        if progress_callback:
+            # Create custom tqdm class to report progress
+            class TqdmCallback(tqdm):
+                def __init__(self, *args, **kwargs):
+                    # Extract filename from desc if available
+                    self._filename = kwargs.get('desc', 'file')
+                    super().__init__(*args, **kwargs)
+
+                def update(self, n=1):
+                    super().update(n)
+                    if self.total and progress_callback:
+                        downloaded_mb = self.n / (1024 * 1024)
+                        total_mb = self.total / (1024 * 1024)
+                        progress_callback(downloaded_mb, total_mb, self._filename)
+
+            snapshot_download(
+                DEFAULT_NLI_MODEL,
+                local_files_only=False,
+                tqdm_class=TqdmCallback,
+            )
+        else:
+            snapshot_download(DEFAULT_NLI_MODEL, local_files_only=False)
 
         logger.info("NLI model downloaded successfully")
         return True
     except Exception as e:
-        logger.error(f"Failed to download NLI model: {e}")
+        error_msg = str(e)
+        logger.error(f"Failed to download NLI model: {error_msg}")
+        if error_callback:
+            error_callback(error_msg)
         return False
 
 

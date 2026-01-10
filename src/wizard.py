@@ -5,6 +5,7 @@ Full-screen TUI with Rich, featuring alternate buffer mode.
 """
 
 import asyncio
+import concurrent.futures
 import logging
 import os
 import platform
@@ -180,9 +181,11 @@ class TUIApp:
         self._footer: str = ""
         self._live: Optional[Live] = None
         self._in_alt_screen = False
+        self._message_log: List[tuple[str, str]] = []  # (message, style) - persistent log
+        self._show_log: bool = True  # Show message log below content
 
     def _render(self) -> RenderableType:
-        """Build the full layout: banner + hardware + content area."""
+        """Build the full layout: banner + hardware + message log + content area."""
         parts = []
 
         # Banner
@@ -193,6 +196,15 @@ class TUIApp:
         # Hardware info
         if self.hardware_info:
             parts.append(get_hardware_panel(self.hardware_info))
+
+        # Message log (shows history of what happened)
+        if self._show_log and self._message_log:
+            parts.append(Text(""))
+            log_lines = []
+            # Show last 8 messages
+            for msg, style in self._message_log[-8:]:
+                log_lines.append(Text(f"  {msg}", style=style))
+            parts.append(Group(*log_lines))
 
         parts.append(Text(""))
 
@@ -259,6 +271,29 @@ class TUIApp:
     def draw(self, content: RenderableType, title: str = ""):
         """Legacy draw method - now uses set_content."""
         self.set_content(content, title=title)
+
+    def log(self, message: str, level: str = "info"):
+        """Add a message to the persistent log. Levels: info, success, error, warn."""
+        style_map = {
+            "info": Theme.INFO,
+            "success": Theme.SUCCESS,
+            "error": Theme.ERROR,
+            "warn": Theme.WARNING,
+            "warning": Theme.WARNING,
+        }
+        style = style_map.get(level, Theme.FG_DIM)
+
+        # Add prefix based on level
+        prefix = {"info": "→", "success": "✓", "error": "✗", "warn": "!", "warning": "!"}.get(level, "→")
+        self._message_log.append((f"{prefix} {message}", style))
+
+        # Refresh display
+        if self._live:
+            self._live.update(self._render())
+
+    def clear_log(self):
+        """Clear the message log."""
+        self._message_log = []
 
 
 # Global app instance
@@ -965,7 +1000,7 @@ async def step_authentication(app: Optional[TUIApp] = None) -> tuple[Optional[st
             MenuItem("Paste token", "token", "Manually enter your API token"),
             MenuItem("Dev mode", "dev", "Test locally without backend"),
         ],
-        title="Step 1/4: Authentication",
+        title="Step 1/5: Authentication",
         subtitle="Choose how to connect",
         filterable=False,  # Only 2 options, no need for filter
     )
@@ -976,7 +1011,9 @@ async def step_authentication(app: Optional[TUIApp] = None) -> tuple[Optional[st
 
     if choice.value == "dev":
         if app:
-            app.draw(Text(" ✓ Dev mode enabled", style=Theme.SUCCESS), title="Step 1/4: Authentication")
+            app.log("Dev mode enabled", "success")
+            app.draw(Text(" ✓ Dev mode enabled", style=Theme.SUCCESS), title="Step 1/5: Authentication")
+        await asyncio.sleep(0.5)
         return "dev_mock_token", "dev-worker", True
 
     # Token input
@@ -999,7 +1036,8 @@ async def step_authentication(app: Optional[TUIApp] = None) -> tuple[Optional[st
     import socket
 
     if app:
-        app.draw(Text(" → Validating token...", style=Theme.INFO), title="Step 1/4: Authentication")
+        app.log("Validating token...", "info")
+        app.draw(Text(" → Validating token...", style=Theme.INFO), title="Step 1/5: Authentication")
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -1012,17 +1050,21 @@ async def step_authentication(app: Optional[TUIApp] = None) -> tuple[Optional[st
                 name = data.get("studio", {}).get("name") or data.get("email", "user")
                 hostname = socket.gethostname().split(".")[0]
                 if app:
-                    app.draw(Text(f" ✓ Authenticated as {name}", style=Theme.SUCCESS), title="Step 1/4: Authentication")
+                    app.log(f"Authenticated as {name}", "success")
+                    app.draw(Text(f" ✓ Authenticated as {name}", style=Theme.SUCCESS), title="Step 1/5: Authentication")
+                await asyncio.sleep(0.5)
                 return token, hostname, False
             else:
                 if app:
-                    app.draw(Text(" ✗ Authentication failed", style=Theme.ERROR), title="Step 1/4: Authentication")
-                await asyncio.sleep(1)
+                    app.log("Authentication failed - invalid token", "error")
+                    app.draw(Text(" ✗ Authentication failed", style=Theme.ERROR), title="Step 1/5: Authentication")
+                await asyncio.sleep(2)
                 return await step_authentication(app)
     except Exception as e:
         if app:
-            app.draw(Text(f" ✗ Connection error: {e}", style=Theme.ERROR), title="Step 1/4: Authentication")
-        await asyncio.sleep(1)
+            app.log(f"Connection error: {e}", "error")
+            app.draw(Text(f" ✗ Connection error: {e}", style=Theme.ERROR), title="Step 1/5: Authentication")
+        await asyncio.sleep(2)
         return await step_authentication(app)
 
 
@@ -1059,7 +1101,7 @@ async def step_model_selection(hardware: Optional[HardwareInfo], app: Optional[T
 
     menu = SelectMenu(
         items=items,
-        title="Step 2/4: Model Selection",
+        title="Step 2/5: Model Selection",
         subtitle="Choose a model to run",
     )
 
@@ -1076,12 +1118,15 @@ async def step_model_selection(hardware: Optional[HardwareInfo], app: Optional[T
         model_path = Path(path_str.replace("~", str(Path.home())))
         if not model_path.exists():
             if app:
-                app.draw(Text(f"✗ File not found: {model_path}", style=Theme.ERROR), title="Step 2/4: Model Selection")
-            await asyncio.sleep(1)
+                app.log(f"File not found: {model_path}", "error")
+                app.draw(Text(f"✗ File not found: {model_path}", style=Theme.ERROR), title="Step 2/5: Model Selection")
+            await asyncio.sleep(2)
             return await step_model_selection(hardware, app)
 
         if app:
-            app.draw(Text(f"✓ Using: {model_path.name}", style=Theme.SUCCESS), title="Step 2/4: Model Selection")
+            app.log(f"Using custom model: {model_path.name}", "success")
+            app.draw(Text(f"✓ Using: {model_path.name}", style=Theme.SUCCESS), title="Step 2/5: Model Selection")
+        await asyncio.sleep(0.5)
         return model_path
 
     # Find model
@@ -1093,12 +1138,15 @@ async def step_model_selection(hardware: Optional[HardwareInfo], app: Optional[T
 
     if model_path.exists():
         if app:
-            app.draw(Text(f"✓ Model ready: {model.name}", style=Theme.SUCCESS), title="Step 2/4: Model Selection")
+            app.log(f"Model ready: {model.name}", "success")
+            app.draw(Text(f"✓ Model ready: {model.name}", style=Theme.SUCCESS), title="Step 2/5: Model Selection")
+        await asyncio.sleep(0.5)
         return model_path
 
     # Download
     if app:
-        app.draw(Text(f"→ Downloading {model.name}...", style=Theme.INFO), title="Step 2/4: Model Selection")
+        app.log(f"Downloading {model.name} ({model.size_gb:.1f}GB)...", "info")
+        app.draw(Text(f"→ Downloading {model.name}...", style=Theme.INFO), title="Step 2/5: Model Selection")
 
     import httpx
     model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1108,6 +1156,7 @@ async def step_model_selection(hardware: Optional[HardwareInfo], app: Optional[T
             async with client.stream("GET", model.url) as response:
                 total = model.size_bytes or int(response.headers.get("content-length", 0))
                 downloaded = 0
+                last_log_pct = -10  # Log every 10%
 
                 with open(model_path, "wb") as f:
                     async for chunk in response.aiter_bytes(1024 * 1024):
@@ -1117,96 +1166,167 @@ async def step_model_selection(hardware: Optional[HardwareInfo], app: Optional[T
                         mb_done = downloaded // 1024 // 1024
                         mb_total = total // 1024 // 1024
                         if app:
-                            app.draw(Text(f"→ Downloading {model.name}... {pct}% ({mb_done}MB / {mb_total}MB)", style=Theme.INFO), title="Step 2/4: Model Selection")
+                            app.draw(Text(f"→ Downloading {model.name}... {pct}% ({mb_done}MB / {mb_total}MB)", style=Theme.INFO), title="Step 2/5: Model Selection")
+                            # Log progress every 10%
+                            if pct >= last_log_pct + 10:
+                                last_log_pct = pct
+                                app.log(f"Download progress: {pct}% ({mb_done}MB / {mb_total}MB)", "info")
 
         if app:
-            app.draw(Text(f"✓ Downloaded: {model.name}", style=Theme.SUCCESS), title="Step 2/4: Model Selection")
+            app.log(f"Downloaded: {model.name}", "success")
+            app.draw(Text(f"✓ Downloaded: {model.name}", style=Theme.SUCCESS), title="Step 2/5: Model Selection")
+        await asyncio.sleep(0.5)
         return model_path
 
     except Exception as e:
         if app:
-            app.draw(Text(f"✗ Download failed: {e}", style=Theme.ERROR), title="Step 2/4: Model Selection")
+            app.log(f"Download failed: {e}", "error")
+            app.draw(Text(f"✗ Download failed: {e}", style=Theme.ERROR), title="Step 2/5: Model Selection")
         if model_path.exists():
             model_path.unlink()
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
         return await step_model_selection(hardware, app)
 
 
 async def step_nli_setup(app: Optional[TUIApp] = None) -> bool:
     """Step 3: NLI setup."""
     from .nli import is_nli_model_available, download_nli_model, get_nli_model_info
-    import concurrent.futures
 
     info = get_nli_model_info()
 
     if app:
+        app.log("Checking NLI model...", "info")
         app.draw(Text("→ Checking NLI model...", style=Theme.INFO), title="Step 3/5: NLI Model Setup")
 
     if is_nli_model_available():
         if app:
+            app.log(f"{info['name']} ready", "success")
             app.draw(Text(f"✓ {info['name']} ready", style=Theme.SUCCESS), title="Step 3/5: NLI Model Setup")
+        await asyncio.sleep(0.5)
         return True
 
     if app:
-        app.draw(Text(f"→ Downloading {info['name']} (~{info['size_mb']}MB)...\n  From: {info['url']}", style=Theme.INFO), title="Step 3/5: NLI Model Setup")
+        app.log(f"Downloading {info['name']} (~{info['size_mb']}MB)...", "info")
+        app.draw(
+            Text(f"→ Downloading {info['name']} (~{info['size_mb']}MB)...\n"
+                 f"  From: {info['url']}\n\n"
+                 f"  This may take a few minutes. Please wait...", style=Theme.INFO),
+            title="Step 3/5: NLI Model Setup"
+        )
 
     try:
-        # Run sync download in thread to not block
+        # Run sync download in thread to not block event loop
         loop = asyncio.get_event_loop()
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            success = await loop.run_in_executor(pool, download_nli_model)
+            # Start download task
+            download_task = loop.run_in_executor(pool, download_nli_model)
+
+            # Show periodic "still downloading" updates while waiting
+            dots = 0
+            while not download_task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(download_task), timeout=3.0)
+                except asyncio.TimeoutError:
+                    dots = (dots + 1) % 4
+                    if app:
+                        app.draw(
+                            Text(f"→ Downloading {info['name']} (~{info['size_mb']}MB){'.' * (dots + 1)}\n"
+                                 f"  From: {info['url']}\n\n"
+                                 f"  This may take a few minutes. Please wait...", style=Theme.INFO),
+                            title="Step 3/5: NLI Model Setup"
+                        )
+
+            success = download_task.result()
 
         if success:
             if app:
+                app.log(f"{info['name']} downloaded", "success")
                 app.draw(Text(f"✓ {info['name']} ready", style=Theme.SUCCESS), title="Step 3/5: NLI Model Setup")
+            await asyncio.sleep(0.5)
         else:
             if app:
+                app.log("NLI download failed - continuing without", "warn")
                 app.draw(Text("! NLI download failed - continuing without", style=Theme.WARNING), title="Step 3/5: NLI Model Setup")
+            await asyncio.sleep(2)  # Give user time to see the warning
 
         return success
 
     except Exception as e:
         if app:
+            app.log(f"NLI setup failed: {e}", "error")
             app.draw(Text(f"! NLI setup failed: {e}", style=Theme.WARNING), title="Step 3/5: NLI Model Setup")
+        await asyncio.sleep(3)  # Give user time to see the error
         return False
 
 
 async def step_intent_setup(app: Optional[TUIApp] = None) -> bool:
     """Step 4: Intent classification model setup (ADR-0010)."""
     from .intent_classifier import is_intent_model_available, download_intent_model, get_intent_model_info
-    import concurrent.futures
 
     info = get_intent_model_info()
 
     if app:
+        app.log("Checking intent model...", "info")
         app.draw(Text("→ Checking intent model...", style=Theme.INFO), title="Step 4/5: Intent Model Setup")
 
     if is_intent_model_available():
         if app:
+            app.log(f"{info['name']} ready", "success")
             app.draw(Text(f"✓ {info['name']} ready", style=Theme.SUCCESS), title="Step 4/5: Intent Model Setup")
+        await asyncio.sleep(0.5)
         return True
 
     if app:
-        app.draw(Text(f"→ Downloading {info['name']} (~{info['size_mb']}MB)...\n  From: {info['url']}", style=Theme.INFO), title="Step 4/5: Intent Model Setup")
+        app.log(f"Downloading {info['name']} (~{info['size_mb']}MB)...", "info")
+        app.draw(
+            Text(f"→ Downloading {info['name']} (~{info['size_mb']}MB)...\n"
+                 f"  From: {info['url']}\n\n"
+                 f"  This may take a few minutes. Please wait...", style=Theme.INFO),
+            title="Step 4/5: Intent Model Setup"
+        )
 
     try:
-        # Run sync download in thread to not block
+        # Run sync download in thread to not block event loop
         loop = asyncio.get_event_loop()
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            success = await loop.run_in_executor(pool, download_intent_model)
+            # Start download task
+            download_task = loop.run_in_executor(pool, download_intent_model)
+
+            # Show periodic "still downloading" updates while waiting
+            dots = 0
+            while not download_task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(download_task), timeout=3.0)
+                except asyncio.TimeoutError:
+                    dots = (dots + 1) % 4
+                    if app:
+                        app.draw(
+                            Text(f"→ Downloading {info['name']} (~{info['size_mb']}MB){'.' * (dots + 1)}\n"
+                                 f"  From: {info['url']}\n\n"
+                                 f"  This may take a few minutes. Please wait...", style=Theme.INFO),
+                            title="Step 4/5: Intent Model Setup"
+                        )
+
+            success = download_task.result()
 
         if success:
             if app:
+                app.log(f"{info['name']} downloaded", "success")
                 app.draw(Text(f"✓ {info['name']} ready", style=Theme.SUCCESS), title="Step 4/5: Intent Model Setup")
+            await asyncio.sleep(0.5)
         else:
             if app:
+                app.log("Intent download failed - continuing without", "warn")
                 app.draw(Text("! Intent download failed - continuing without", style=Theme.WARNING), title="Step 4/5: Intent Model Setup")
+            await asyncio.sleep(2)  # Give user time to see the warning
 
         return success
 
     except Exception as e:
         if app:
+            app.log(f"Intent setup failed: {e}", "error")
             app.draw(Text(f"! Intent setup failed: {e}", style=Theme.WARNING), title="Step 4/5: Intent Model Setup")
+        await asyncio.sleep(3)  # Give user time to see the error
         return False
 
 
@@ -1272,30 +1392,46 @@ async def step_start(
             nli_service = None
             if nli_enabled:
                 status.set_line("nli", "NLI", "Loading...")
-                from .nli import NLIService
-                nli_service = NLIService()
-                # Suppress transformers/pytorch warnings during model loading
-                with suppress_external_output():
-                    model_loaded = nli_service.load_model()
-                if model_loaded:
-                    status.set_line("nli", "NLI", f"✓ Ready ({nli_service.device})")
-                else:
-                    status.set_line("nli", "NLI", "✗ Failed")
+                try:
+                    from .nli import NLIService
+                    nli_service = NLIService()
+                    # Run model loading in thread pool to not block event loop
+                    loop = asyncio.get_event_loop()
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        with suppress_external_output():
+                            model_loaded = await loop.run_in_executor(pool, nli_service.load_model)
+                    if model_loaded:
+                        status.set_line("nli", "NLI", f"✓ Ready ({nli_service.device})")
+                    else:
+                        status.set_line("nli", "NLI", "✗ Failed to load")
+                        status.log("NLI model failed to load - continuing without", "warn")
+                        nli_service = None
+                except Exception as e:
+                    status.set_line("nli", "NLI", f"✗ Error: {e}")
+                    status.log(f"NLI error: {e}", "error")
                     nli_service = None
 
             # Initialize intent classifier (ADR-0010)
             intent_classifier = None
             if intent_enabled:
                 status.set_line("intent", "Intent", "Loading...")
-                from .intent_classifier import IntentClassifier
-                intent_classifier = IntentClassifier()
-                # Suppress transformers/pytorch warnings during model loading
-                with suppress_external_output():
-                    model_loaded = intent_classifier.load_model()
-                if model_loaded:
-                    status.set_line("intent", "Intent", f"✓ Ready ({intent_classifier.device})")
-                else:
-                    status.set_line("intent", "Intent", "✗ Failed")
+                try:
+                    from .intent_classifier import IntentClassifier
+                    intent_classifier = IntentClassifier()
+                    # Run model loading in thread pool to not block event loop
+                    loop = asyncio.get_event_loop()
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        with suppress_external_output():
+                            model_loaded = await loop.run_in_executor(pool, intent_classifier.load_model)
+                    if model_loaded:
+                        status.set_line("intent", "Intent", f"✓ Ready ({intent_classifier.device})")
+                    else:
+                        status.set_line("intent", "Intent", "✗ Failed to load")
+                        status.log("Intent model failed to load - continuing without", "warn")
+                        intent_classifier = None
+                except Exception as e:
+                    status.set_line("intent", "Intent", f"✗ Error: {e}")
+                    status.log(f"Intent error: {e}", "error")
                     intent_classifier = None
 
             model_id = _resolve_backend_model_id(model_path.stem)

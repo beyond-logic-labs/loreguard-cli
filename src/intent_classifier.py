@@ -223,54 +223,56 @@ def is_intent_model_available() -> bool:
         return False
 
 
-def download_intent_model(progress_callback=None) -> bool:
+def download_intent_model(progress_callback=None, error_callback=None) -> bool:
     """Pre-download the intent model to HuggingFace cache.
 
     This is optional - the model will be downloaded automatically on first use.
     But calling this explicitly gives better user feedback during setup.
 
     Args:
-        progress_callback: Optional callback(current_bytes, total_bytes) for progress updates.
+        progress_callback: Optional callback(downloaded_mb, total_mb, filename) for progress updates.
+        error_callback: Optional callback(error_message) to report errors.
 
     Returns:
         True if download successful, False otherwise.
     """
     try:
-        from huggingface_hub import snapshot_download, hf_hub_url
-        from huggingface_hub.utils import tqdm as hf_tqdm
-        import os
+        from huggingface_hub import snapshot_download
+        from tqdm import tqdm
 
         logger.info(f"Downloading intent model: {DEFAULT_INTENT_MODEL}")
         logger.info(f"Source: https://huggingface.co/{DEFAULT_INTENT_MODEL}")
 
-        # Use snapshot_download for better progress tracking
-        # This downloads all model files to HuggingFace cache
         if progress_callback:
-            # Custom progress tracking
-            class ProgressCallback:
-                def __init__(self, callback):
-                    self.callback = callback
-                    self.total = 0
-                    self.current = 0
+            # Create custom tqdm class to report progress
+            class TqdmCallback(tqdm):
+                def __init__(self, *args, **kwargs):
+                    # Extract filename from desc if available
+                    self._filename = kwargs.get('desc', 'file')
+                    super().__init__(*args, **kwargs)
 
-                def __call__(self, *args, **kwargs):
-                    # Called during download
-                    pass
+                def update(self, n=1):
+                    super().update(n)
+                    if self.total and progress_callback:
+                        downloaded_mb = self.n / (1024 * 1024)
+                        total_mb = self.total / (1024 * 1024)
+                        progress_callback(downloaded_mb, total_mb, self._filename)
 
             snapshot_download(
                 DEFAULT_INTENT_MODEL,
                 local_files_only=False,
+                tqdm_class=TqdmCallback,
             )
         else:
-            snapshot_download(
-                DEFAULT_INTENT_MODEL,
-                local_files_only=False,
-            )
+            snapshot_download(DEFAULT_INTENT_MODEL, local_files_only=False)
 
         logger.info("Intent model downloaded successfully")
         return True
     except Exception as e:
-        logger.error(f"Failed to download intent model: {e}")
+        error_msg = str(e)
+        logger.error(f"Failed to download intent model: {error_msg}")
+        if error_callback:
+            error_callback(error_msg)
         return False
 
 

@@ -4,7 +4,6 @@ Uses the local proxy for NPC conversations with token streaming:
 - POST /api/chat - Chat with an NPC (grounded responses via SSE streaming)
 """
 
-import getpass
 import json
 from typing import TYPE_CHECKING
 
@@ -107,12 +106,7 @@ class NPCChat(Vertical):
         self._api_token: str = ""
         self._verbose: bool = False
         self._messages: list[dict] = []
-        try:
-            self._player_handle = getpass.getuser()
-        except Exception:
-            self._player_handle = ""
-        if not self._player_handle:
-            self._player_handle = "tui_user"
+        self._player_handle = "Player"
         self._generating = False
         self._visible = False
 

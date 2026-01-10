@@ -655,6 +655,27 @@ class BackendTunnel:
                     self._log(f"Stream error for {request_id[:8]}...: {error_msg}", "error")
                     return
 
+            # Safety net: if generator exits without yielding "done" or "error",
+            # send completion with whatever content we have (shouldn't happen normally)
+            latency_ms = int((time.time() - start_time) * 1000)
+            self._log(f"Stream ended unexpectedly for {request_id[:8]}... ({token_count} tokens)", "warn")
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "llm_stream_complete",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": token_count > 0,  # Partial success if we got tokens
+                    "content": "".join(content_parts),
+                    "tokenCount": token_count,
+                    "latencyMs": latency_ms,
+                    "errorMessage": "Stream ended without completion signal" if token_count == 0 else "",
+                },
+            })
+
         except Exception as e:
             logger.exception("LLM stream handling error")
             self._log(f"Stream error: {e}", "error")

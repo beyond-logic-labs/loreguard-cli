@@ -1,6 +1,7 @@
 """Running screen - Step 4/4."""
 
 import asyncio
+import concurrent.futures
 from typing import TYPE_CHECKING, Optional
 
 from textual.app import ComposeResult
@@ -132,19 +133,54 @@ class RunningScreen(Screen):
         # Start llama-server
         self._update_status("server", "llama-server", "Starting...")
         self._update_status("model", "Model", app.model_path.name)
+        self._log(f"Starting llama-server with {app.model_path.name}", "info")
 
         self._llama_process = LlamaServerProcess(app.model_path, port=8080)
         self._llama_process.start()
 
-        self._update_status("server", "llama-server", "Loading model...", "info")
-        ready = await self._llama_process.wait_for_ready(timeout=120.0)
+        # Wait for model to load with progress updates
+        self._log("Loading LLM model, this may take a minute...", "info")
+        import time
+        import httpx
+
+        start = time.time()
+        timeout = 120.0
+        ready = False
+
+        async with httpx.AsyncClient() as client:
+            while time.time() - start < timeout:
+                elapsed = int(time.time() - start)
+                self._update_status("server", "llama-server", f"Loading model... ({elapsed}s)", "info")
+
+                # Check if process died
+                if self._llama_process.process and self._llama_process.process.poll() is not None:
+                    self._log("llama-server process terminated unexpectedly", "error")
+                    break
+
+                try:
+                    response = await client.get(
+                        f"http://127.0.0.1:{self._llama_process.port}/health",
+                        timeout=5.0
+                    )
+                    if response.status_code == 200:
+                        ready = True
+                        break
+                    # 503 means "loading" - server is up but model not ready yet
+                except httpx.RequestError:
+                    pass
+
+                await asyncio.sleep(1.0)
 
         if not ready:
             self._llama_process.stop()
-            self._update_status("server", "llama-server", "Failed to start", "error")
+            elapsed = int(time.time() - start)
+            self._update_status("server", "llama-server", f"Failed after {elapsed}s", "error")
+            self._log(f"llama-server failed to start after {elapsed}s", "error")
             return
 
-        self._update_status("server", "llama-server", "Running on :8080", "success")
+        elapsed = int(time.time() - start)
+        self._update_status("server", "llama-server", f"Running on :8080 ({elapsed}s)", "success")
+        self._log(f"LLM ready in {elapsed}s", "success")
 
         # Connect backend
         if not app.dev_mode:
@@ -156,20 +192,26 @@ class RunningScreen(Screen):
 
                 llm_proxy = LLMProxy("http://127.0.0.1:8080")
 
-                # Load NLI service
+                # Load NLI service (run in thread pool to not block event loop)
                 nli_service = None
                 self._update_status("nli", "NLI", "Loading...", "info")
+                self._log("Loading NLI model...", "info")
                 try:
                     nli_service = NLIService()
-                    with suppress_external_output():
-                        model_loaded = nli_service.load_model()
+                    loop = asyncio.get_event_loop()
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        with suppress_external_output():
+                            model_loaded = await loop.run_in_executor(pool, nli_service.load_model)
                     if model_loaded:
                         self._update_status("nli", "NLI", f"Ready ({nli_service.device})", "success")
+                        self._log(f"NLI ready on {nli_service.device}", "success")
                     else:
                         self._update_status("nli", "NLI", "Failed", "warning")
+                        self._log("NLI model failed to load", "warning")
                         nli_service = None
                 except Exception as e:
                     self._update_status("nli", "NLI", f"Error: {e}", "warning")
+                    self._log(f"NLI error: {e}", "error")
                     nli_service = None
 
                 # Get model ID for backend

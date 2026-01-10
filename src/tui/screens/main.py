@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import Static
+from textual.widgets import Static, RichLog
 from textual.containers import Container
 
 from ..widgets.banner import LoreguardBanner
@@ -113,6 +113,16 @@ class MainScreen(Screen):
         height: 1;
         dock: bottom;
     }
+
+    MainScreen #activity-log {
+        width: 100%;
+        height: 1fr;
+        min-height: 8;
+        max-height: 12;
+        border: solid $surface-lighten-2;
+        padding: 0 1;
+        margin: 0 2;
+    }
     """
 
     def compose(self) -> ComposeResult:
@@ -121,6 +131,7 @@ class MainScreen(Screen):
         yield HardwareInfo()
         with Container(id="main-content"):
             yield Static("", id="main-status")
+        yield RichLog(id="activity-log", highlight=True, markup=True, wrap=True)
         yield NPCChat()
         yield ServerMonitor()
         yield LoreguardFooter()
@@ -204,34 +215,66 @@ class MainScreen(Screen):
         """Setup NLI model."""
         import asyncio
         import concurrent.futures
+        import functools
         from ...nli import is_nli_model_available, download_nli_model, get_nli_model_info
 
         if is_nli_model_available():
-            self._update_status("NLI model ready")
+            self._update_status("NLI model ready", log=False)
+            self._log("NLI model already downloaded", "success")
             await asyncio.sleep(0.3)
             self._show_intent_setup()
             return
 
         # Show model info during download
         info = get_nli_model_info()
-        self._update_status(f"Downloading {info['name']} (~{info['size_mb']}MB) from huggingface.co...")
+        self._update_status(f"Downloading NLI model...", log=False)
+        self._log(f"Downloading {info['name']} (~{info['size_mb']}MB)")
+        self._log(f"From: https://huggingface.co/{info['model_id']}")
+
+        # Track progress state and error
+        last_progress = {"pct": -1}
+        download_error = {"msg": None}
+
+        def progress_callback(downloaded_mb, total_mb, filename):
+            if total_mb > 0:
+                pct = int(downloaded_mb / total_mb * 100)
+                # Only update every 5% to avoid spam
+                if pct >= last_progress["pct"] + 5 or pct == 100:
+                    last_progress["pct"] = pct
+                    # Use call_from_thread to safely update UI from background thread
+                    self.app.call_from_thread(
+                        self._update_status,
+                        f"Downloading NLI: {pct}% ({int(downloaded_mb)}MB / {int(total_mb)}MB)",
+                        False
+                    )
+
+        def error_callback(error_msg):
+            download_error["msg"] = error_msg
 
         try:
             loop = asyncio.get_event_loop()
             with concurrent.futures.ThreadPoolExecutor() as pool:
-                # Don't suppress - let HuggingFace show its progress
-                success = await loop.run_in_executor(pool, download_nli_model)
+                success = await loop.run_in_executor(
+                    pool,
+                    functools.partial(download_nli_model, progress_callback=progress_callback, error_callback=error_callback)
+                )
 
             if success:
-                self._update_status("NLI model ready")
+                self._update_status("NLI model ready", log=False)
+                self._log("NLI model downloaded", "success")
             else:
-                self._update_status("NLI download failed - continuing without")
+                self._update_status("NLI download failed", log=False)
+                if download_error["msg"]:
+                    self._log(f"NLI download failed: {download_error['msg']}", "error")
+                else:
+                    self._log("NLI download failed - continuing without", "warning")
 
             await asyncio.sleep(0.3)
             self._show_intent_setup()
 
         except Exception as e:
-            self._update_status(f"NLI setup failed: {e}")
+            self._update_status(f"NLI setup failed", log=False)
+            self._log(f"NLI setup failed: {e}", "error")
             await asyncio.sleep(0.5)
             self._show_intent_setup()
 
@@ -244,40 +287,73 @@ class MainScreen(Screen):
         """Setup intent classifier model (ADR-0010)."""
         import asyncio
         import concurrent.futures
+        import functools
         from ...intent_classifier import is_intent_model_available, download_intent_model, get_intent_model_info
 
         if is_intent_model_available():
-            self._update_status("Intent model ready")
+            self._update_status("Intent model ready", log=False)
+            self._log("Intent model already downloaded", "success")
             await asyncio.sleep(0.3)
             self._start_services()
             return
 
         # Show model info during download
         info = get_intent_model_info()
-        self._update_status(f"Downloading {info['name']} (~{info['size_mb']}MB) from huggingface.co...")
+        self._update_status(f"Downloading intent model...", log=False)
+        self._log(f"Downloading {info['name']} (~{info['size_mb']}MB)")
+        self._log(f"From: https://huggingface.co/{info['model_id']}")
+
+        # Track progress state and error
+        last_progress = {"pct": -1}
+        download_error = {"msg": None}
+
+        def progress_callback(downloaded_mb, total_mb, filename):
+            if total_mb > 0:
+                pct = int(downloaded_mb / total_mb * 100)
+                # Only update every 5% to avoid spam
+                if pct >= last_progress["pct"] + 5 or pct == 100:
+                    last_progress["pct"] = pct
+                    # Use call_from_thread to safely update UI from background thread
+                    self.app.call_from_thread(
+                        self._update_status,
+                        f"Downloading Intent: {pct}% ({int(downloaded_mb)}MB / {int(total_mb)}MB)",
+                        False
+                    )
+
+        def error_callback(error_msg):
+            download_error["msg"] = error_msg
 
         try:
             loop = asyncio.get_event_loop()
             with concurrent.futures.ThreadPoolExecutor() as pool:
-                # Don't suppress - let HuggingFace show its progress
-                success = await loop.run_in_executor(pool, download_intent_model)
+                success = await loop.run_in_executor(
+                    pool,
+                    functools.partial(download_intent_model, progress_callback=progress_callback, error_callback=error_callback)
+                )
 
             if success:
-                self._update_status("Intent model ready")
+                self._update_status("Intent model ready", log=False)
+                self._log("Intent model downloaded", "success")
             else:
-                self._update_status("Intent download failed - continuing without")
+                self._update_status("Intent download failed", log=False)
+                if download_error["msg"]:
+                    self._log(f"Intent download failed: {download_error['msg']}", "error")
+                else:
+                    self._log("Intent download failed - continuing without", "warning")
 
             await asyncio.sleep(0.3)
             self._start_services()
 
         except Exception as e:
-            self._update_status(f"Intent setup failed: {e}")
+            self._update_status(f"Intent setup failed", log=False)
+            self._log(f"Intent setup failed: {e}", "error")
             await asyncio.sleep(0.5)
             self._start_services()
 
     def _start_services(self) -> None:
         """Start llama-server and backend connection."""
-        self._update_status("Starting services...")
+        self._update_status("Starting services...", log=False)
+        self._log("Starting services...")
         self.run_worker(self._do_start_services())
 
     async def _do_start_services(self) -> None:
@@ -307,15 +383,56 @@ class MainScreen(Screen):
         app._llama_process = LlamaServerProcess(app.model_path, port=8080)
         app._llama_process.start()
 
-        self._update_status("Loading model...")
-        ready = await app._llama_process.wait_for_ready(timeout=120.0)
+        # Wait for model to load with progress updates
+        import time
+        import httpx
+
+        self._log(f"Loading LLM: {app.model_path.name}")
+
+        start = time.time()
+        timeout = 120.0
+        ready = False
+        last_log_time = 0
+
+        async with httpx.AsyncClient() as client:
+            while time.time() - start < timeout:
+                elapsed = int(time.time() - start)
+                # Update status every second (no log spam)
+                self._update_status(f"Loading model... ({elapsed}s)", log=False)
+
+                # Log progress every 10 seconds
+                if elapsed >= last_log_time + 10:
+                    last_log_time = elapsed
+                    self._log(f"Still loading... ({elapsed}s)")
+
+                # Check if process died
+                if app._llama_process.process and app._llama_process.process.poll() is not None:
+                    self._log("llama-server process died", "error")
+                    break
+
+                try:
+                    response = await client.get(
+                        f"http://127.0.0.1:{app._llama_process.port}/health",
+                        timeout=5.0
+                    )
+                    if response.status_code == 200:
+                        ready = True
+                        break
+                except httpx.RequestError:
+                    pass
+
+                await asyncio.sleep(1.0)
 
         if not ready:
             app._llama_process.stop()
-            self._update_status("llama-server failed to start")
+            elapsed = int(time.time() - start)
+            self._update_status(f"llama-server failed after {elapsed}s", log=False)
+            self._log(f"llama-server failed to start after {elapsed}s", "error")
             return
 
-        self._update_status("llama-server running on :8080")
+        elapsed = int(time.time() - start)
+        self._update_status(f"llama-server ready", log=False)
+        self._log(f"LLM ready in {elapsed}s", "success")
 
         # Connect backend if not dev mode
         if not app.dev_mode:
@@ -327,6 +444,7 @@ class MainScreen(Screen):
     async def _connect_backend(self) -> None:
         """Connect to Loreguard backend."""
         import asyncio
+        import concurrent.futures
         from ...tunnel import BackendTunnel
         from ...llm import LLMProxy
         from ...nli import NLIService
@@ -335,33 +453,51 @@ class MainScreen(Screen):
 
         app: "LoreguardApp" = self.app  # type: ignore
 
-        self._update_status("Connecting to backend...")
+        self._update_status("Loading NLI model...", log=False)
+        self._log("Loading NLI model...")
         self._update_connection_status("connecting")
 
         try:
             llm_proxy = LLMProxy("http://127.0.0.1:8080")
 
-            # Load NLI service
+            # Load NLI service (run in thread pool to not block event loop)
             nli_service = None
             try:
                 nli_service = NLIService()
-                with suppress_external_output():
-                    model_loaded = nli_service.load_model()
-                if not model_loaded:
+                loop = asyncio.get_event_loop()
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    with suppress_external_output():
+                        model_loaded = await loop.run_in_executor(pool, nli_service.load_model)
+                if model_loaded:
+                    self._log(f"NLI ready ({nli_service.device})", "success")
+                else:
+                    self._log("NLI failed to load", "warning")
                     nli_service = None
-            except Exception:
+            except Exception as e:
+                self._log(f"NLI error: {e}", "error")
                 nli_service = None
 
-            # Load intent classifier (ADR-0010)
+            # Load intent classifier (ADR-0010) - run in thread pool
+            self._update_status("Loading intent model...", log=False)
+            self._log("Loading intent classifier...")
             intent_classifier = None
             try:
                 intent_classifier = IntentClassifier()
-                with suppress_external_output():
-                    model_loaded = intent_classifier.load_model()
-                if not model_loaded:
+                loop = asyncio.get_event_loop()
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    with suppress_external_output():
+                        model_loaded = await loop.run_in_executor(pool, intent_classifier.load_model)
+                if model_loaded:
+                    self._log(f"Intent classifier ready ({intent_classifier.device})", "success")
+                else:
+                    self._log("Intent classifier failed to load", "warning")
                     intent_classifier = None
-            except Exception:
+            except Exception as e:
+                self._log(f"Intent classifier error: {e}", "error")
                 intent_classifier = None
+
+            self._update_status("Connecting to backend...", log=False)
+            self._log("Connecting to Loreguard backend...")
 
             model_id = _resolve_backend_model_id(app.model_path.stem) if app.model_path else "unknown"
 
@@ -446,14 +582,37 @@ class MainScreen(Screen):
             self._update_status(f"Backend error: {e}")
             self._update_connection_status("disconnected")
 
-    def _update_status(self, text: str) -> None:
-        """Update the status text."""
+    def _update_status(self, text: str, log: bool = True) -> None:
+        """Update the status text and optionally log it."""
         self._status_text = text
         try:
             status = self.query_one("#main-status", Static)
             status.update(f"  {text}")
         except Exception:
             pass
+
+        # Also append to the activity log
+        if log:
+            self._log(text)
+
+    def _log(self, message: str, level: str = "info") -> None:
+        """Append a message to the activity log."""
+        try:
+            log_widget = self.query_one("#activity-log", RichLog)
+        except Exception:
+            return
+
+        # Color based on level
+        if level == "error":
+            prefix = "[red]ERROR:[/] "
+        elif level == "warning" or level == "warn":
+            prefix = "[yellow]WARN:[/] "
+        elif level == "success":
+            prefix = "[green]OK:[/] "
+        else:
+            prefix = "[cyan]→[/] "
+
+        log_widget.write(f"{prefix}{message}")
 
     def _update_connection_status(self, status: str) -> None:
         """Update the connection status indicator."""

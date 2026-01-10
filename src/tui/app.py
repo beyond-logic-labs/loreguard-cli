@@ -1,5 +1,8 @@
 """Main Loreguard TUI application using Textual framework."""
 
+import atexit
+import os
+import sys
 from pathlib import Path
 from typing import Optional, Any
 
@@ -10,6 +13,25 @@ from textual.driver import Driver
 
 from .styles import LOREGUARD_CSS
 from .widgets.hardware_info import HardwareData
+
+
+def _restore_terminal():
+    """Restore terminal state on exit."""
+    if sys.stdout.isatty():
+        # Show cursor
+        sys.stdout.write("\033[?25h")
+        # Reset terminal attributes
+        sys.stdout.write("\033[0m")
+        sys.stdout.flush()
+        # Try stty sane as last resort
+        try:
+            os.system("stty sane 2>/dev/null")
+        except Exception:
+            pass
+
+
+# Register terminal restore on exit
+atexit.register(_restore_terminal)
 
 
 class LoreguardApp(App):
@@ -73,6 +95,44 @@ class LoreguardApp(App):
         self.verbose = verbose
         self.theme = "dracula"  # Default to Dracula theme
 
+        # Configure debug logging when verbose mode is enabled
+        if verbose:
+            self._setup_debug_logging()
+
+    def _setup_debug_logging(self) -> None:
+        """Setup debug logging to file when verbose mode is enabled."""
+        import logging
+        from pathlib import Path
+
+        log_file = Path.cwd() / "loreguard-debug.log"
+
+        # Get root logger
+        root_logger = logging.getLogger()
+
+        # Remove existing handlers
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
+
+        # File handler - captures all debug output
+        file_handler = logging.FileHandler(log_file, mode='w')
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        ))
+
+        # Console handler - only warnings (don't mess up TUI)
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.WARNING)
+        console_handler.setFormatter(logging.Formatter("%(message)s"))
+
+        root_logger.addHandler(file_handler)
+        root_logger.addHandler(console_handler)
+        root_logger.setLevel(logging.DEBUG)
+
+        # Store log file path for reference
+        self._log_file = log_file
+
     def on_mount(self) -> None:
         """Handle mount event - push the main screen."""
         from .screens.main import MainScreen
@@ -80,10 +140,31 @@ class LoreguardApp(App):
 
     def action_quit(self) -> None:
         """Quit with cleanup."""
-        # Stop SDK server
-        from ..http_server import stop_sdk_server
-        stop_sdk_server()
+        import asyncio
 
+        # Stop SDK server
+        try:
+            from ..http_server import stop_sdk_server
+            stop_sdk_server()
+        except Exception:
+            pass
+
+        # Disconnect tunnel (WebSocket)
+        if self._tunnel:
+            try:
+                # Create task to disconnect, but don't wait
+                asyncio.create_task(self._tunnel.disconnect())
+            except Exception:
+                pass
+            self._tunnel = None
+
+        # Stop llama-server process
         if self._llama_process:
-            self._llama_process.stop()
+            try:
+                self._llama_process.stop()
+            except Exception:
+                pass
+            self._llama_process = None
+
+        # Exit the app
         self.exit()
