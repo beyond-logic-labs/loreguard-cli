@@ -4,7 +4,8 @@ This module defines the models that are officially supported and tested
 for NPC inference. Users can also specify custom model folders.
 """
 
-from dataclasses import dataclass
+import platform
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -12,12 +13,17 @@ from typing import Optional
 HF_ORG = "beyond-logic-labs"
 
 
+def is_apple_silicon() -> bool:
+    """Check if running on Apple Silicon."""
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
 @dataclass
 class ModelInfo:
     """Information about a supported model."""
     id: str                     # Unique identifier
     name: str                   # Display name
-    filename: str               # GGUF filename
+    filename: str               # GGUF filename (or folder name for MLX)
     size_gb: float              # Approximate size in GB
     size_bytes: int             # Exact size in bytes (for download progress)
     context_length: int         # Context window size
@@ -26,6 +32,8 @@ class ModelInfo:
     hardware: str               # Hardware requirement hint
     recommended: bool = False   # Show as recommended
     experimental: bool = False  # Mark as experimental/lower quality
+    is_mlx: bool = False        # True for MLX format (Apple Silicon only)
+    requires_apple_silicon: bool = False  # Only show on Apple Silicon
 
 
 @dataclass
@@ -44,43 +52,57 @@ class AdapterInfo:
 
 # Supported models for NPC inference
 # Fine-tuned Loreguard models with multi-pass pipeline training
+# Based on unsloth/Llama-3.1-8B-Instruct with Unsloth Dynamic (UD) quantization
+# UD = per-layer optimized quantization for better accuracy at same VRAM
 # Ordered by recommendation (best first)
 SUPPORTED_MODELS: list[ModelInfo] = [
-    # Loreguard Vanilla - Generic NPC pipeline (citations, multi-pass)
+    # GGUF models with Unsloth Dynamic quantization (cross-platform, uses llama-server)
     ModelInfo(
-        id="loreguard-vanilla-q4k",
-        name="Loreguard Vanilla Q4_K",
-        filename="Llama-3.1-8B-loreguard-vanilla-Q4_K.gguf",
-        size_gb=4.6,
-        size_bytes=4_920_739_200,
+        id="loreguard-vanilla-ud-q6k",
+        name="Loreguard Vanilla UD Q6_K",
+        filename="loreguard-vanilla-UD-Q6_K.gguf",
+        size_gb=6.6,
+        size_bytes=7_085_559_072,
         context_length=8192,
-        url=f"https://huggingface.co/{HF_ORG}/loreguard-vanilla-gguf/resolve/main/Llama-3.1-8B-loreguard-vanilla-Q4_K.gguf",
-        description="Best for 6GB VRAM. Trained on Loreguard NPC pipeline.",
-        hardware="8GB RAM • 6GB VRAM",
+        url=f"https://huggingface.co/{HF_ORG}/loreguard-vanilla-gguf/resolve/main/loreguard-vanilla-UD-Q6_K.gguf",
+        description="Recommended. Best quality/size balance.",
+        hardware="12GB RAM • 8GB VRAM",
         recommended=True,
     ),
     ModelInfo(
-        id="loreguard-vanilla-q5km",
-        name="Loreguard Vanilla Q5_K_M",
-        filename="Llama-3.1-8B-loreguard-vanilla-Q5_K_M.gguf",
-        size_gb=5.3,
-        size_bytes=5_732_992_384,
+        id="loreguard-vanilla-ud-q5km",
+        name="Loreguard Vanilla UD Q5_K_M",
+        filename="loreguard-vanilla-UD-Q5_K_M.gguf",
+        size_gb=5.7,
+        size_bytes=6_145_035_552,
         context_length=8192,
-        url=f"https://huggingface.co/{HF_ORG}/loreguard-vanilla-gguf/resolve/main/Llama-3.1-8B-loreguard-vanilla-Q5_K_M.gguf",
-        description="Better quality. Fits 6GB with Q4 KV cache (-ctk q4_0 -ctv q4_0).",
+        url=f"https://huggingface.co/{HF_ORG}/loreguard-vanilla-gguf/resolve/main/loreguard-vanilla-UD-Q5_K_M.gguf",
+        description="Good quality, smaller size.",
         hardware="10GB RAM • 6-8GB VRAM",
         recommended=False,
     ),
     ModelInfo(
-        id="loreguard-vanilla-q6k",
-        name="Loreguard Vanilla Q6_K",
-        filename="Llama-3.1-8B-loreguard-vanilla-Q6_K.gguf",
-        size_gb=6.1,
-        size_bytes=6_596_011_392,
+        id="loreguard-vanilla-ud-q4km",
+        name="Loreguard Vanilla UD Q4_K_M",
+        filename="loreguard-vanilla-UD-Q4_K_M.gguf",
+        size_gb=4.9,
+        size_bytes=5_282_912_544,
         context_length=8192,
-        url=f"https://huggingface.co/{HF_ORG}/loreguard-vanilla-gguf/resolve/main/Llama-3.1-8B-loreguard-vanilla-Q6_K.gguf",
-        description="Highest quality. Requires 8GB+ VRAM.",
-        hardware="12GB RAM • 8GB VRAM",
+        url=f"https://huggingface.co/{HF_ORG}/loreguard-vanilla-gguf/resolve/main/loreguard-vanilla-UD-Q4_K_M.gguf",
+        description="Best for 6GB VRAM. Smallest size.",
+        hardware="8GB RAM • 6GB VRAM",
+        recommended=False,
+    ),
+    ModelInfo(
+        id="loreguard-vanilla-ud-q8",
+        name="Loreguard Vanilla UD Q8_0",
+        filename="loreguard-vanilla-UD-Q8_0.gguf",
+        size_gb=8.5,
+        size_bytes=9_177_550_624,
+        context_length=8192,
+        url=f"https://huggingface.co/{HF_ORG}/loreguard-vanilla-gguf/resolve/main/loreguard-vanilla-UD-Q8_0.gguf",
+        description="Maximum quality. Requires more VRAM.",
+        hardware="16GB RAM • 12GB VRAM",
         recommended=False,
     ),
 ]
@@ -100,6 +122,32 @@ def get_recommended_model() -> ModelInfo:
         if model.recommended:
             return model
     return SUPPORTED_MODELS[0]
+
+
+def get_available_models() -> list[ModelInfo]:
+    """Get models available for the current platform.
+
+    Filters out MLX models on non-Apple Silicon platforms.
+    """
+    available = []
+    for model in SUPPORTED_MODELS:
+        # Skip Apple Silicon-only models on other platforms
+        if model.requires_apple_silicon and not is_apple_silicon():
+            continue
+        available.append(model)
+    return available
+
+
+def get_gguf_models() -> list[ModelInfo]:
+    """Get only GGUF models (cross-platform)."""
+    return [m for m in SUPPORTED_MODELS if not m.is_mlx]
+
+
+def get_mlx_models() -> list[ModelInfo]:
+    """Get only MLX models (Apple Silicon only)."""
+    if not is_apple_silicon():
+        return []
+    return [m for m in SUPPORTED_MODELS if m.is_mlx]
 
 
 # Supported LoRA adapters for pipeline-enhanced NPC inference
