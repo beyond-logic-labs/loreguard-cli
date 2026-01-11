@@ -8,6 +8,10 @@ from dataclasses import dataclass
 from typing import Optional
 
 
+# HuggingFace organization for Beyond Logic Labs assets
+HF_ORG = "beyond-logic-labs"
+
+
 @dataclass
 class ModelInfo:
     """Information about a supported model."""
@@ -24,92 +28,60 @@ class ModelInfo:
     experimental: bool = False  # Mark as experimental/lower quality
 
 
+@dataclass
+class AdapterInfo:
+    """Information about a LoRA adapter."""
+    id: str                     # Unique identifier
+    name: str                   # Display name
+    filename: str               # GGUF filename
+    size_mb: float              # Approximate size in MB
+    size_bytes: int             # Exact size in bytes (for download progress)
+    url: str                    # Download URL (HuggingFace)
+    description: str            # Short description
+    base_models: list[str]      # Compatible base model IDs
+    recommended: bool = False   # Show as recommended
+
+
 # Supported models for NPC inference
+# Fine-tuned Loreguard models with multi-pass pipeline training
 # Ordered by recommendation (best first)
 SUPPORTED_MODELS: list[ModelInfo] = [
+    # Loreguard Vanilla - Generic NPC pipeline (citations, multi-pass)
     ModelInfo(
-        id="qwen3-4b-instruct",
-        name="Qwen3 4B Instruct",
-        filename="Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-        size_gb=2.8,
-        size_bytes=2_936_012_800,
-        context_length=32768,
-        url="https://huggingface.co/lmstudio-community/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-        description="Best balance of speed and quality. Recommended for most users.",
-        hardware="8GB RAM • Any GPU",
+        id="loreguard-vanilla-q4k",
+        name="Loreguard Vanilla Q4_K",
+        filename="Llama-3.1-8B-loreguard-vanilla-Q4_K.gguf",
+        size_gb=4.6,
+        size_bytes=4_920_739_200,
+        context_length=8192,
+        url=f"https://huggingface.co/{HF_ORG}/loreguard-vanilla-gguf/resolve/main/Llama-3.1-8B-loreguard-vanilla-Q4_K.gguf",
+        description="Best for 6GB VRAM. Trained on Loreguard NPC pipeline.",
+        hardware="8GB RAM • 6GB VRAM",
         recommended=True,
     ),
     ModelInfo(
-        id="llama-3.2-3b-instruct",
-        name="Llama 3.2 3B Instruct",
-        filename="Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-        size_gb=2.0,
-        size_bytes=2_019_377_120,
-        context_length=131072,
-        url="https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-        description="Fast and capable. Great for quick responses.",
-        hardware="8GB RAM • Any GPU",
+        id="loreguard-vanilla-q5km",
+        name="Loreguard Vanilla Q5_K_M",
+        filename="Llama-3.1-8B-loreguard-vanilla-Q5_K_M.gguf",
+        size_gb=5.3,
+        size_bytes=5_732_992_384,
+        context_length=8192,
+        url=f"https://huggingface.co/{HF_ORG}/loreguard-vanilla-gguf/resolve/main/Llama-3.1-8B-loreguard-vanilla-Q5_K_M.gguf",
+        description="Better quality. Fits 6GB with Q4 KV cache (-ctk q4_0 -ctv q4_0).",
+        hardware="10GB RAM • 6-8GB VRAM",
         recommended=False,
     ),
     ModelInfo(
-        id="rnj-1-instruct",
-        name="RNJ-1 Instruct Q6_K",
-        filename="rnj-1-instruct-Q6_K.gguf",
+        id="loreguard-vanilla-q6k",
+        name="Loreguard Vanilla Q6_K",
+        filename="Llama-3.1-8B-loreguard-vanilla-Q6_K.gguf",
         size_gb=6.1,
-        size_bytes=6_538_379_264,
-        context_length=32768,
-        url="https://huggingface.co/lmstudio-community/rnj-1-instruct-GGUF/resolve/main/rnj-1-instruct-Q6_K.gguf",
-        description="Roleplay-focused model. Excellent for immersive NPCs.",
+        size_bytes=6_596_011_392,
+        context_length=8192,
+        url=f"https://huggingface.co/{HF_ORG}/loreguard-vanilla-gguf/resolve/main/Llama-3.1-8B-loreguard-vanilla-Q6_K.gguf",
+        description="Highest quality. Requires 8GB+ VRAM.",
         hardware="12GB RAM • 8GB VRAM",
         recommended=False,
-    ),
-    ModelInfo(
-        id="qwen3-8b",
-        name="Qwen3 8B",
-        filename="Qwen3-8B-Q4_K_M.gguf",
-        size_gb=5.0,
-        size_bytes=5_400_682_496,
-        context_length=32768,
-        url="https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf",
-        description="Higher quality responses. Requires more VRAM.",
-        hardware="12GB RAM • 6GB VRAM",
-        recommended=False,
-    ),
-    ModelInfo(
-        id="meta-llama-3-8b-instruct",
-        name="Meta Llama 3 8B Instruct",
-        filename="Meta-Llama-3-8B-Instruct.Q4_K_S.gguf",
-        size_gb=4.9,
-        size_bytes=5_268_701_184,
-        context_length=8192,
-        url="https://huggingface.co/QuantFactory/Meta-Llama-3-8B-Instruct-GGUF/resolve/main/Meta-Llama-3-8B-Instruct.Q4_K_S.gguf",
-        description="Strong general-purpose model from Meta.",
-        hardware="12GB RAM • 6GB VRAM",
-        recommended=False,
-    ),
-    ModelInfo(
-        id="gpt-oss-20b",
-        name="GPT-OSS 20B",
-        filename="gpt-oss-20b-MXFP4.gguf",
-        size_gb=11.5,
-        size_bytes=12_348_907_520,
-        context_length=32768,
-        url="https://huggingface.co/lmstudio-community/gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-MXFP4.gguf",
-        description="Large model for high-quality responses. Needs powerful hardware.",
-        hardware="16GB RAM • 12GB VRAM",
-        recommended=False,
-    ),
-    ModelInfo(
-        id="qwen3-1.7b",
-        name="Qwen3 1.7B",
-        filename="Qwen3-1.7B-Q4_K_M.gguf",
-        size_gb=1.1,
-        size_bytes=1_191_362_560,
-        context_length=32768,
-        url="https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf",
-        description="Very fast but lower quality. For testing only.",
-        hardware="4GB RAM • CPU OK",
-        experimental=True,
     ),
 ]
 
@@ -128,6 +100,49 @@ def get_recommended_model() -> ModelInfo:
         if model.recommended:
             return model
     return SUPPORTED_MODELS[0]
+
+
+# Supported LoRA adapters for pipeline-enhanced NPC inference
+# Note: Merged models (SUPPORTED_MODELS) are recommended over base + adapter
+# These adapters are for advanced users who want to use their own base model
+SUPPORTED_ADAPTERS: list[AdapterInfo] = [
+    AdapterInfo(
+        id="loreguard-vanilla-lora",
+        name="Loreguard Vanilla LoRA",
+        filename="loreguard-vanilla.gguf",
+        size_mb=160.0,
+        size_bytes=167_787_680,
+        url=f"https://huggingface.co/{HF_ORG}/loreguard-vanilla-lora-gguf/resolve/main/loreguard-vanilla.gguf",
+        description="LoRA adapter for custom base models. Use with Llama 3.1 8B.",
+        base_models=["llama-3.1-8b-instruct"],
+        recommended=False,
+    ),
+]
+
+
+def get_adapter_by_id(adapter_id: str) -> Optional[AdapterInfo]:
+    """Get an adapter by its ID."""
+    for adapter in SUPPORTED_ADAPTERS:
+        if adapter.id == adapter_id:
+            return adapter
+    return None
+
+
+def get_recommended_adapter() -> Optional[AdapterInfo]:
+    """Get the recommended adapter."""
+    for adapter in SUPPORTED_ADAPTERS:
+        if adapter.recommended:
+            return adapter
+    return SUPPORTED_ADAPTERS[0] if SUPPORTED_ADAPTERS else None
+
+
+def get_adapters_for_model(model_id: str) -> list[AdapterInfo]:
+    """Get all adapters compatible with a given base model."""
+    compatible = []
+    for adapter in SUPPORTED_ADAPTERS:
+        if model_id in adapter.base_models:
+            compatible.append(adapter)
+    return compatible
 
 
 # NLI (Natural Language Inference) model for fact verification

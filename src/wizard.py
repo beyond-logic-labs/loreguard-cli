@@ -969,11 +969,11 @@ def _suggest_model_id(models, hardware: Optional[HardwareInfo]) -> Optional[str]
         return None
     ram = hardware.ram_gb
     if ram >= 16:
-        preferred = ["qwen3-4b-instruct", "qwen3-8b"]
+        preferred = ["loreguard-vanilla-q6k", "loreguard-vanilla-q5km"]
     elif ram >= 8:
-        preferred = ["qwen3-4b-instruct", "llama-3.2-3b-instruct"]
+        preferred = ["loreguard-vanilla-q4k", "loreguard-vanilla-q5km"]
     else:
-        preferred = ["qwen3-1.7b"]
+        preferred = ["loreguard-vanilla-q4k"]
 
     for model_id in preferred:
         if any(m.id == model_id for m in models):
@@ -982,7 +982,9 @@ def _suggest_model_id(models, hardware: Optional[HardwareInfo]) -> Optional[str]
 
 
 def _resolve_backend_model_id(filename_stem: str) -> str:
-    mappings = {"qwen3-4b": "qwen3-4b", "qwen3-8b": "qwen3-8b", "llama-3": "llama-3.1-8b"}
+    # Map model filenames to backend model IDs
+    # All loreguard models are Llama 3.1 8B based
+    mappings = {"loreguard": "llama-3.1-8b", "llama-3": "llama-3.1-8b"}
     for pattern, backend_id in mappings.items():
         if pattern in filename_stem.lower():
             return backend_id

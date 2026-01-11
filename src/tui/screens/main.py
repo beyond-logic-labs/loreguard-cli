@@ -30,10 +30,7 @@ def _resolve_backend_model_id(filename_stem: str) -> str:
     We map the local model filename to the closest match.
     """
     MODEL_MAPPINGS = {
-        "qwen3-4b": "qwen3-4b",
-        "qwen3-8b": "qwen3-8b",
-        "qwen3-0.6b": "qwen3-0.6b",
-        "qwen3-1.7b": "qwen3-4b",  # Map to closest
+        "loreguard": "llama-3.1-8b",  # All loreguard models are Llama 3.1 8B based
         "llama-3": "llama-3.1-8b",
         "mistral": "mistral-7b",
         "phi-3": "phi-3",
@@ -150,15 +147,18 @@ class MainScreen(Screen):
             # Use saved config
             app.api_token = config.api_token
             app.model_path = config.get_model_path_obj()
+            app.adapter_path = config.get_adapter_path_obj()
             app.dev_mode = config.dev_mode
 
+            model_name = app.model_path.name if app.model_path else 'unknown'
+            adapter_name = f" + {app.adapter_path.name}" if app.adapter_path else ""
             if config.dev_mode:
                 app.worker_id = "dev-worker"
-                self._update_status(f"Using saved config: {app.model_path.name if app.model_path else 'unknown'}")
+                self._update_status(f"Using saved config: {model_name}{adapter_name}")
             else:
                 import socket
                 app.worker_id = socket.gethostname().split(".")[0]
-                self._update_status(f"Using saved config: {app.model_path.name if app.model_path else 'unknown'}")
+                self._update_status(f"Using saved config: {model_name}{adapter_name}")
 
             # Skip auth/model selection, go straight to services
             self._show_nli_setup()
@@ -191,19 +191,47 @@ class MainScreen(Screen):
                 app: "LoreguardApp" = self.app  # type: ignore
                 app.model_path = model_path
 
-                # Save config
+                # Save config (without adapter yet)
                 config = LoreguardConfig.load()
                 config.api_token = app.api_token
                 config.set_model_path(model_path)
                 config.dev_mode = app.dev_mode
                 config.save()
 
-                self._show_nli_setup()
+                # Show adapter selection
+                self._show_adapter_select()
 
         # Show unified palette with only models (no commands during setup)
         self.app.push_screen(
             UnifiedPaletteModal(title="Step 2/4 Model", show_models=True, show_commands=False),
             handle_model
+        )
+
+    def _show_adapter_select(self) -> None:
+        """Show adapter selection modal (optional LoRA adapter)."""
+        from ..modals.unified_palette import UnifiedPaletteModal
+
+        def handle_adapter(result: tuple | None) -> None:
+            app: "LoreguardApp" = self.app  # type: ignore
+
+            if result and result[0] == "adapter":
+                adapter_path = result[1]
+                app.adapter_path = adapter_path
+
+                # Save adapter to config
+                config = LoreguardConfig.load()
+                config.set_adapter_path(adapter_path)
+                config.save()
+            else:
+                # No adapter selected (skipped)
+                app.adapter_path = None
+
+            self._show_nli_setup()
+
+        # Show unified palette with adapters
+        self.app.push_screen(
+            UnifiedPaletteModal(title="Step 3/4 Adapter (Optional)", show_adapters=True, show_models=False, show_commands=False),
+            handle_adapter
         )
 
     def _show_nli_setup(self) -> None:
@@ -378,16 +406,19 @@ class MainScreen(Screen):
                 self._update_status(f"Failed: {e}")
                 return
 
-        # Start llama-server
+        # Start llama-server (with optional LoRA adapter)
         self._update_status("Starting llama-server...")
-        app._llama_process = LlamaServerProcess(app.model_path, port=8080)
+        app._llama_process = LlamaServerProcess(app.model_path, port=8080, lora_path=app.adapter_path)
         app._llama_process.start()
 
         # Wait for model to load with progress updates
         import time
         import httpx
 
-        self._log(f"Loading LLM: {app.model_path.name}")
+        model_info = app.model_path.name
+        if app.adapter_path:
+            model_info += f" + {app.adapter_path.name}"
+        self._log(f"Loading LLM: {model_info}")
 
         start = time.time()
         timeout = 120.0
@@ -774,6 +805,13 @@ class MainScreen(Screen):
             if result and result[0] == "model":
                 model_path = result[1]
 
+                # Disconnect tunnel first (to avoid "worker already connected" error)
+                if app._tunnel:
+                    self._update_status("Disconnecting from backend...")
+                    import asyncio
+                    asyncio.create_task(app._tunnel.disconnect())
+                    app._tunnel = None
+
                 # Stop current server if running
                 if app._llama_process:
                     self._update_status("Stopping current server...")
@@ -788,12 +826,45 @@ class MainScreen(Screen):
                 config.set_model_path(model_path)
                 config.save()
 
-                self._update_status(f"Switched to {model_path.name}")
-                self._start_services()
+                # Show adapter selection
+                self._switch_adapter()
 
         self.app.push_screen(
             UnifiedPaletteModal(title="Switch Model", show_models=True, show_commands=False),
             handle_model
+        )
+
+    def _switch_adapter(self) -> None:
+        """Switch adapter after model selection."""
+        from ..modals.unified_palette import UnifiedPaletteModal
+
+        app: "LoreguardApp" = self.app  # type: ignore
+
+        def handle_adapter(result: tuple | None) -> None:
+            if result and result[0] == "adapter":
+                adapter_path = result[1]
+                app.adapter_path = adapter_path
+
+                # Save adapter to config
+                config = LoreguardConfig.load()
+                config.set_adapter_path(adapter_path)
+                config.save()
+            else:
+                # No adapter selected (skipped or cancelled)
+                app.adapter_path = None
+                config = LoreguardConfig.load()
+                config.set_adapter_path(None)
+                config.save()
+
+            model_info = app.model_path.name if app.model_path else "unknown"
+            if app.adapter_path:
+                model_info += f" + {app.adapter_path.name}"
+            self._update_status(f"Switched to {model_info}")
+            self._start_services()
+
+        self.app.push_screen(
+            UnifiedPaletteModal(title="Select Adapter", show_adapters=True, show_models=False, show_commands=False),
+            handle_adapter
         )
 
     def _open_theme_picker(self) -> None:

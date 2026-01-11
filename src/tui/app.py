@@ -54,6 +54,7 @@ class LoreguardApp(App):
     api_token: str = ""
     worker_id: str = ""
     model_path: Optional[Path] = None
+    adapter_path: Optional[Path] = None  # Optional LoRA adapter
     hardware: Optional[HardwareData] = None
     dev_mode: bool = False
     verbose: bool = False

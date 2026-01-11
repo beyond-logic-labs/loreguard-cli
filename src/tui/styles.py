@@ -130,7 +130,8 @@ ListView > ListItem.-selected {{
 Footer, LoreguardFooter {{
     background: {BG_DARK};
     color: {FG_DIM};
-    height: 1;
+    height: 2;
+    margin-top: 1;
 }}
 
 Footer .footer--key, LoreguardFooter .footer--key {{

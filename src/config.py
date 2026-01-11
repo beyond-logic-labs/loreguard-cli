@@ -45,6 +45,7 @@ class LoreguardConfig:
     """Loreguard client persistent configuration."""
     api_token: str = ""
     model_path: str = ""  # Store as string for JSON serialization
+    adapter_path: str = ""  # Optional LoRA adapter path
     dev_mode: bool = False
 
     def save(self) -> None:
@@ -64,6 +65,7 @@ class LoreguardConfig:
                 return cls(
                     api_token=data.get("api_token", ""),
                     model_path=data.get("model_path", ""),
+                    adapter_path=data.get("adapter_path", ""),
                     dev_mode=data.get("dev_mode", False),
                 )
             except (json.JSONDecodeError, KeyError):
@@ -81,6 +83,18 @@ class LoreguardConfig:
     def set_model_path(self, path: Optional[Path]) -> None:
         """Set the model path."""
         self.model_path = str(path) if path else ""
+
+    def get_adapter_path_obj(self) -> Optional[Path]:
+        """Get the adapter path as a Path object."""
+        if self.adapter_path:
+            path = Path(self.adapter_path)
+            if path.exists():
+                return path
+        return None
+
+    def set_adapter_path(self, path: Optional[Path]) -> None:
+        """Set the adapter path."""
+        self.adapter_path = str(path) if path else ""
 
     def has_saved_config(self) -> bool:
         """Check if we have a saved configuration with token and model."""

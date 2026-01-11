@@ -1,21 +1,29 @@
 """Custom footer with model status."""
 
 from textual.reactive import reactive
-from textual.widgets import Footer
-from rich.protocol import is_renderable
-from rich.table import Table
+from textual.widgets import Static
 from rich.text import Text
+from rich.table import Table
 
-from ..styles import FG, FG_DIM, CYAN
+from ..styles import FG, FG_DIM, CYAN, GREEN
 
 
-class LoreguardFooter(Footer):
-    """Footer showing key bindings plus model status."""
+class LoreguardFooter(Static):
+    """Footer showing model status."""
+
+    DEFAULT_CSS = """
+    LoreguardFooter {
+        height: 2;
+        dock: bottom;
+        padding: 0 1;
+        margin-top: 1;
+        background: $surface;
+    }
+    """
 
     llm_model: reactive[str] = reactive("", layout=True)
-    nli_model: reactive[str] = reactive("", layout=True)
-    intent_model: reactive[str] = reactive("", layout=True)
-    backend_version: reactive[str] = reactive("", layout=True)
+    llm_adapter: reactive[str] = reactive("", layout=True)
+    api_version: reactive[str] = reactive("", layout=True)
 
     def on_mount(self) -> None:
         """Start syncing model labels from the app state."""
@@ -28,73 +36,42 @@ class LoreguardFooter(Footer):
 
         # LLM model
         model_path = getattr(app, "model_path", None)
-        llm_name = model_path.name if model_path else ""
+        llm_name = model_path.stem if model_path else ""  # Use stem (no extension)
 
-        # NLI model (citation check)
-        nli_name = ""
-        nli_service = getattr(tunnel, "nli_service", None) if tunnel else None
-        if nli_service and getattr(nli_service, "is_loaded", False):
-            nli_name = getattr(nli_service, "model_name", "")
+        # Adapter
+        adapter_path = getattr(app, "adapter_path", None)
+        adapter_name = adapter_path.stem if adapter_path else ""
 
-        # Intent classifier model
-        intent_name = ""
-        intent_classifier = getattr(tunnel, "intent_classifier", None) if tunnel else None
-        if intent_classifier and getattr(intent_classifier, "is_loaded", False):
-            intent_name = getattr(intent_classifier, "model_name", "")
-            # Shorten model name for display
-            if "/" in intent_name:
-                intent_name = intent_name.split("/")[-1]
-
-        # Backend version (from tunnel if available)
-        backend_ver = getattr(tunnel, "backend_version", "") if tunnel else ""
+        # Backend API version
+        api_ver = getattr(tunnel, "backend_version", "") if tunnel else ""
 
         # Update reactives if changed
         if llm_name != self.llm_model:
             self.llm_model = llm_name
-        if nli_name != self.nli_model:
-            self.nli_model = nli_name
-        if intent_name != self.intent_model:
-            self.intent_model = intent_name
-        if backend_ver != self.backend_version:
-            self.backend_version = backend_ver
+        if adapter_name != self.llm_adapter:
+            self.llm_adapter = adapter_name
+        if api_ver != self.api_version:
+            self.api_version = api_ver
 
-    def render(self):
-        key_text = super().render()
-        if not is_renderable(key_text):
-            key_text = Text("")
-
-        info_text = Text()
-
-        # Show loaded models
-        models_shown = 0
-
+    def render(self) -> Table:
+        """Render footer with LLM on left, server version on right."""
+        # Left side: LLM + adapter
+        left = Text()
         if self.llm_model:
-            info_text.append("LLM:", style=FG_DIM)
-            info_text.append(self.llm_model, style=FG)
-            models_shown += 1
+            left.append("LLM:", style=FG_DIM)
+            left.append(self.llm_model, style=FG)
+            if self.llm_adapter:
+                left.append(" + ", style=FG_DIM)
+                left.append(self.llm_adapter, style=GREEN)
 
-        if self.nli_model:
-            if models_shown > 0:
-                info_text.append(" ", style=FG_DIM)
-            info_text.append("NLI:", style=FG_DIM)
-            info_text.append(self.nli_model, style=FG)
-            models_shown += 1
-
-        if self.intent_model:
-            if models_shown > 0:
-                info_text.append(" ", style=FG_DIM)
-            info_text.append("Intent:", style=FG_DIM)
-            info_text.append(self.intent_model, style=FG)
-            models_shown += 1
-
-        if self.backend_version:
-            if models_shown > 0:
-                info_text.append(" ", style=FG_DIM)
-            info_text.append("API:", style=FG_DIM)
-            info_text.append(self.backend_version, style=CYAN)
+        # Right side: Server version
+        right = Text()
+        if self.api_version:
+            right.append("Server Version: ", style=FG_DIM)
+            right.append(self.api_version, style=CYAN)
 
         table = Table.grid(expand=True)
         table.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
-        table.add_column(justify="right", no_wrap=True, overflow="ellipsis")
-        table.add_row(key_text, info_text)
+        table.add_column(justify="right", no_wrap=True)
+        table.add_row(left, right)
         return table

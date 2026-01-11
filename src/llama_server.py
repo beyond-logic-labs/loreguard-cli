@@ -272,9 +272,10 @@ async def download_llama_server(
 class LlamaServerProcess:
     """Manages a llama-server subprocess."""
 
-    def __init__(self, model_path: Path, port: int = 8080):
+    def __init__(self, model_path: Path, port: int = 8080, lora_path: Optional[Path] = None):
         self.model_path = model_path
         self.port = port
+        self.lora_path = lora_path
         self.process: Optional[subprocess.Popen] = None
         self._output_lines: list[str] = []
 
@@ -296,6 +297,10 @@ class LlamaServerProcess:
             "-c", "32768",  # Context length
             "-ngl", "99",   # GPU layers (use all)
         ]
+
+        # Add LoRA adapter if specified
+        if self.lora_path and self.lora_path.exists():
+            cmd.extend(["--lora", str(self.lora_path)])
 
         # Start process
         self.process = subprocess.Popen(

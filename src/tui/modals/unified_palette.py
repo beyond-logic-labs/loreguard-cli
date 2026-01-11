@@ -124,12 +124,14 @@ class UnifiedPaletteModal(ModalScreen[tuple[str, Any] | None]):
         items: list[PaletteItem] | None = None,
         show_models: bool = True,
         show_commands: bool = True,
+        show_adapters: bool = False,
     ) -> None:
         super().__init__()
         self._title = title
         self._custom_items = items or []
         self._show_models = show_models
         self._show_commands = show_commands
+        self._show_adapters = show_adapters
         self._all_items: list[PaletteItem] = []
         self._filtered_items: list[PaletteItem] = []
         self._models_dir: Path | None = None
@@ -229,6 +231,45 @@ class UnifiedPaletteModal(ModalScreen[tuple[str, Any] | None]):
                     category="model",
                     icon=icon,
                     data=model,
+                ))
+
+        # Add adapters (LoRA)
+        if self._show_adapters:
+            from ...llama_server import get_models_dir
+            from ...models_registry import SUPPORTED_ADAPTERS
+
+            self._models_dir = get_models_dir()
+
+            # Add "No adapter" option first
+            self._all_items.append(PaletteItem(
+                id="adapter-none",
+                title="No Adapter",
+                description="skip",
+                category="adapter",
+                icon="",
+                data=None,
+            ))
+
+            for adapter in SUPPORTED_ADAPTERS:
+                is_installed = self._models_dir and (self._models_dir / adapter.filename).exists()
+
+                tags = []
+                if is_installed:
+                    tags.append("installed")
+                else:
+                    tags.append(f"{adapter.size_mb:.0f}MB")
+                if adapter.recommended:
+                    tags.append("recommended")
+
+                icon = "✓" if is_installed else ""
+
+                self._all_items.append(PaletteItem(
+                    id=f"adapter-{adapter.id}",
+                    title=adapter.name,
+                    description=" • ".join(tags),
+                    category="adapter",
+                    icon=icon,
+                    data=adapter,
                 ))
 
     def _populate_list(self, filter_text: str = "") -> None:
@@ -378,6 +419,20 @@ class UnifiedPaletteModal(ModalScreen[tuple[str, Any] | None]):
             else:
                 self._download_model(model, model_path)
 
+        elif item.category == "adapter":
+            adapter = item.data
+            if adapter is None:
+                # "No adapter" selected
+                self.dismiss(("adapter", None))
+            elif not self._models_dir:
+                return
+            else:
+                adapter_path = self._models_dir / adapter.filename
+                if adapter_path.exists():
+                    self.dismiss(("adapter", adapter_path))
+                else:
+                    self._download_adapter(adapter, adapter_path)
+
         elif item.category == "theme":
             # Return the theme ID
             self.dismiss(("theme", item.id))
@@ -442,3 +497,56 @@ class UnifiedPaletteModal(ModalScreen[tuple[str, Any] | None]):
             self._downloading = False
             if model_path.exists():
                 model_path.unlink()
+
+    def _download_adapter(self, adapter, adapter_path: Path) -> None:
+        """Download an adapter."""
+        self._downloading = True
+
+        status = self.query_one("#status-line", Static)
+        status.update(Text(f"Downloading {adapter.name}...", style=CYAN))
+
+        progress = self.query_one("#download-progress", ProgressBar)
+        progress.display = True
+
+        self.run_worker(self._do_download_adapter(adapter, adapter_path))
+
+    async def _do_download_adapter(self, adapter, adapter_path: Path) -> None:
+        """Worker to download adapter."""
+        status = self.query_one("#status-line", Static)
+        progress = self.query_one("#download-progress", ProgressBar)
+
+        adapter_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=None) as client:
+                async with client.stream("GET", adapter.url) as response:
+                    total = adapter.size_bytes or int(response.headers.get("content-length", 0))
+                    downloaded = 0
+
+                    progress.update(total=total, progress=0)
+
+                    with open(adapter_path, "wb") as f:
+                        async for chunk in response.aiter_bytes(1024 * 1024):
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            progress.update(progress=downloaded)
+
+                            pct = int(downloaded / total * 100) if total > 0 else 0
+                            mb = downloaded // 1024 // 1024
+                            total_mb = total // 1024 // 1024
+                            status.update(Text(f"Downloading {adapter.name}... {pct}% ({mb}/{total_mb} MB)", style=CYAN))
+
+            status.update(Text(f"Downloaded {adapter.name}", style=f"bold {GREEN}"))
+            progress.display = False
+            self._downloading = False
+
+            import asyncio
+            await asyncio.sleep(0.5)
+            self.dismiss(("adapter", adapter_path))
+
+        except Exception as e:
+            status.update(Text(f"Download failed: {e}", style=f"bold {RED}"))
+            progress.display = False
+            self._downloading = False
+            if adapter_path.exists():
+                adapter_path.unlink()

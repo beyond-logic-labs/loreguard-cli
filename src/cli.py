@@ -341,16 +341,15 @@ def main():
         epilog="""
 Examples:
   loreguard --token lg_xxx... --model ./model.gguf
-  loreguard --token lg_xxx... --model-id qwen3-4b
-  loreguard --token lg_xxx... --worker-id my-pc --model-id qwen3-4b
+  loreguard --token lg_xxx... --model-id loreguard-vanilla-q4k
+  loreguard --token lg_xxx... --worker-id my-pc --model-id loreguard-vanilla-q4k
   loreguard --chat --token lg_xxx...   # Test NPC chat (no model needed)
-  loreguard --dev --model-id qwen3-4b  # Local dev mode
+  loreguard --dev --model-id loreguard-vanilla-q4k  # Local dev mode
 
 Available model IDs:
-  qwen3-4b-instruct    Qwen3 4B Instruct (recommended, 2.8 GB)
-  llama-3.2-3b         Llama 3.2 3B Instruct (2.0 GB)
-  qwen3-8b             Qwen3 8B (5.2 GB)
-  meta-llama-3-8b      Meta Llama 3 8B (4.9 GB)
+  loreguard-vanilla-q4k   Loreguard Vanilla Q4_K (recommended, 4.6 GB, 6GB VRAM)
+  loreguard-vanilla-q5km  Loreguard Vanilla Q5_K_M (5.3 GB, 6-8GB VRAM)
+  loreguard-vanilla-q6k   Loreguard Vanilla Q6_K (6.1 GB, 8GB+ VRAM)
         """,
     )
 
