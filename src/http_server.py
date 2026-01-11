@@ -470,6 +470,20 @@ def stop_sdk_server() -> None:
         _server = None
 
 
+def force_stop_sdk_server() -> None:
+    """Force stop the SDK server immediately without waiting."""
+    global _server
+    if _server:
+        _server._running = False
+        # Clean up runtime file
+        RuntimeInfo.clear()
+        # Force stop the loop if it exists
+        if _server._loop and _server._loop.is_running():
+            _server._loop.call_soon_threadsafe(_server._loop.stop)
+        # Don't wait for thread - it's a daemon thread anyway
+        _server = None
+
+
 def update_backend_status(connected: bool) -> None:
     """Update backend connection status in runtime.json."""
     global _server

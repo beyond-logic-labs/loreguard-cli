@@ -140,32 +140,34 @@ class LoreguardApp(App):
         self.push_screen(MainScreen())
 
     def action_quit(self) -> None:
-        """Quit with cleanup."""
-        import asyncio
+        """Quit immediately - no waiting for cleanup."""
+        import os
+        import signal
 
-        # Stop SDK server
-        try:
-            from ..http_server import stop_sdk_server
-            stop_sdk_server()
-        except Exception:
-            pass
-
-        # Disconnect tunnel (WebSocket)
-        if self._tunnel:
+        # Force kill llama-server process immediately (don't wait)
+        if self._llama_process and self._llama_process.process:
             try:
-                # Create task to disconnect, but don't wait
-                asyncio.create_task(self._tunnel.disconnect())
-            except Exception:
-                pass
-            self._tunnel = None
-
-        # Stop llama-server process
-        if self._llama_process:
-            try:
-                self._llama_process.stop()
+                self._llama_process.process.kill()
             except Exception:
                 pass
             self._llama_process = None
 
-        # Exit the app
+        # Stop SDK server (quick - just set flag and close socket)
+        try:
+            from ..http_server import force_stop_sdk_server
+            force_stop_sdk_server()
+        except Exception:
+            pass
+
+        # Close tunnel WebSocket synchronously if possible
+        if self._tunnel and hasattr(self._tunnel, 'ws') and self._tunnel.ws:
+            try:
+                # Just close the underlying socket, don't await graceful close
+                if hasattr(self._tunnel.ws, 'transport') and self._tunnel.ws.transport:
+                    self._tunnel.ws.transport.close()
+            except Exception:
+                pass
+            self._tunnel = None
+
+        # Exit immediately
         self.exit()

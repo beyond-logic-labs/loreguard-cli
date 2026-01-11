@@ -9,6 +9,11 @@ Automatically detects mode:
 
 import sys
 import json
+import warnings
+
+# Suppress asyncio pending task warnings on exit (they're noise during force quit)
+warnings.filterwarnings("ignore", message=".*Task was destroyed but it is pending.*")
+warnings.filterwarnings("ignore", message=".*coroutine.*was never awaited.*")
 
 
 def main():
