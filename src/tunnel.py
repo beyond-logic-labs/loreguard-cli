@@ -450,6 +450,14 @@ class BackendTunnel:
             # Chat response complete from backend (local proxy architecture)
             await self._handle_chat_stream_done(data)
 
+        elif msg_type == "slot_save_request":
+            # ADR-0014: Backend wants us to save KV cache to disk
+            await self._handle_slot_save_request(data)
+
+        elif msg_type == "slot_restore_request":
+            # ADR-0014: Backend wants us to restore KV cache from disk
+            await self._handle_slot_restore_request(data)
+
         else:
             logger.debug(f"Unknown message type: {msg_type}")
 
@@ -544,14 +552,21 @@ class BackendTunnel:
 
         try:
             # Convert stream request payload to LLM request format
+            # ADR-0014: Use warmupContext for KV cache sharing if provided
+            # warmupContext contains static NPC content (personality, memory, etc.)
+            # that is identical across all pipeline passes, enabling llama-server
+            # to cache and reuse the KV prefix.
+            warmup_context = payload.get("warmupContext") or payload.get("systemPrompt", "")
+
             llm_request = {
                 "messages": [
-                    {"role": "system", "content": payload.get("systemPrompt", "")},
+                    {"role": "system", "content": warmup_context},
                     {"role": "user", "content": payload.get("userMessage", "")},
                 ],
                 "max_tokens": payload.get("maxTokens", 512),
                 "temperature": payload.get("temperature", 0.7),
                 "timeout": payload.get("timeoutMs", 120000) / 1000,  # Convert to seconds
+                "cache_prompt": payload.get("cacheEnabled", False),  # Enable KV cache prefix sharing
             }
 
             # Pass through JSON output settings (ADR-0012: grammar-constrained JSON)
@@ -1082,11 +1097,15 @@ class BackendTunnel:
         # Build messages array
         messages = []
 
-        # Add system prompt
-        if payload.get("systemPrompt"):
+        # ADR-0014: Use warmupContext for KV cache sharing if provided
+        # warmupContext contains static NPC content that is identical across passes
+        warmup_context = payload.get("warmupContext") or payload.get("systemPrompt", "")
+
+        # Add system prompt (warmupContext takes priority)
+        if warmup_context:
             messages.append({
                 "role": "system",
-                "content": payload["systemPrompt"],
+                "content": warmup_context,
             })
 
         # Add conversation history
@@ -1108,6 +1127,7 @@ class BackendTunnel:
             "max_tokens": payload.get("maxTokens", 512),
             "temperature": payload.get("temperature", 0.7),
             "timeout": payload.get("timeoutMs", 120000) / 1000.0,  # Convert ms to seconds
+            "cache_prompt": payload.get("cacheEnabled", False),  # ADR-0014: KV cache prefix sharing
         }
 
         # Pass through JSON output settings (ADR-0012: grammar-constrained JSON)
@@ -1117,6 +1137,245 @@ class BackendTunnel:
                 request["json_schema"] = payload["jsonSchema"]
 
         return request
+
+    def _validate_slot_filename(self, filename: str) -> tuple[bool, str]:
+        """Validate a slot cache filename for security.
+
+        Returns (is_valid, error_message). Mirrors Go's sanitizeFilenameComponent.
+        Security: Prevents path traversal and injection attacks.
+        """
+        import re
+
+        if not filename:
+            return False, "filename is required"
+
+        # Check length (match Go's 64 char limit + extension)
+        if len(filename) > 80:
+            return False, "filename exceeds maximum length"
+
+        # Check for path traversal attempts
+        if ".." in filename or "/" in filename or "\\" in filename:
+            return False, "invalid filename: path traversal not allowed"
+
+        # Validate filename format: npc_{id}_{hash}.bin
+        # Only allow alphanumeric, underscore, hyphen, and .bin extension
+        if not re.match(r'^[a-zA-Z0-9_-]+\.bin$', filename):
+            return False, "invalid filename format"
+
+        return True, ""
+
+    async def _handle_slot_save_request(self, data: dict):
+        """Handle a slot save request from the backend (ADR-0014).
+
+        Saves the KV cache for a slot to disk, enabling cross-message caching
+        of warmup context (NPC personality, memories, etc.).
+        """
+        payload = data.get("payload", {})
+        request_id = payload.get("requestId")
+        trace_id = data.get("traceId", "")
+        slot_id = payload.get("slotId", 0)
+        filename = payload.get("filename", "")
+
+        if not request_id:
+            self._log("Slot save request missing requestId", "error")
+            return
+
+        # Security: Validate slot ID range (0-7, matching Go validation)
+        if not isinstance(slot_id, int) or slot_id < 0 or slot_id > 7:
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "slot_save_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "success": False,
+                    "errorMessage": f"invalid slotId {slot_id}: must be 0-7",
+                },
+            })
+            return
+
+        # Security: Validate filename to prevent path traversal
+        is_valid, error_msg = self._validate_slot_filename(filename)
+        if not is_valid:
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "slot_save_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "success": False,
+                    "errorMessage": error_msg,
+                },
+            })
+            return
+
+        self._log(f"Slot save request {request_id[:8]}... (slot={slot_id}, file={filename})", "info")
+        start_time = time.time()
+
+        try:
+            result = await self.llm_proxy.save_slot(slot_id, filename)
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            if "error" in result:
+                await self._send({
+                    "id": self._generate_message_id(),
+                    "type": "slot_save_response",
+                    "timestamp": self._iso_timestamp(),
+                    "senderId": self.worker_id,
+                    "traceId": trace_id,
+                    "payload": {
+                        "requestId": request_id,
+                        "success": False,
+                        "errorMessage": result["error"],
+                        "latencyMs": latency_ms,
+                    },
+                })
+            else:
+                await self._send({
+                    "id": self._generate_message_id(),
+                    "type": "slot_save_response",
+                    "timestamp": self._iso_timestamp(),
+                    "senderId": self.worker_id,
+                    "traceId": trace_id,
+                    "payload": {
+                        "requestId": request_id,
+                        "success": True,
+                        "tokensSaved": result.get("n_saved", 0),
+                        "bytesWritten": result.get("n_written", 0),
+                        "latencyMs": latency_ms,
+                    },
+                })
+                self._log(f"Slot saved: {result.get('n_saved', 0)} tokens ({latency_ms}ms)", "success")
+
+        except Exception as e:
+            logger.exception("Slot save handling error")
+            self._log(f"Slot save error: {e}", "error")
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "slot_save_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "success": False,
+                    "errorMessage": str(e),
+                },
+            })
+
+    async def _handle_slot_restore_request(self, data: dict):
+        """Handle a slot restore request from the backend (ADR-0014).
+
+        Restores the KV cache for a slot from disk, warming up the model
+        with previously cached NPC context.
+        """
+        payload = data.get("payload", {})
+        request_id = payload.get("requestId")
+        trace_id = data.get("traceId", "")
+        slot_id = payload.get("slotId", 0)
+        filename = payload.get("filename", "")
+
+        if not request_id:
+            self._log("Slot restore request missing requestId", "error")
+            return
+
+        # Security: Validate slot ID range (0-7, matching Go validation)
+        if not isinstance(slot_id, int) or slot_id < 0 or slot_id > 7:
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "slot_restore_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "success": False,
+                    "errorMessage": f"invalid slotId {slot_id}: must be 0-7",
+                },
+            })
+            return
+
+        # Security: Validate filename to prevent path traversal
+        is_valid, error_msg = self._validate_slot_filename(filename)
+        if not is_valid:
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "slot_restore_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "success": False,
+                    "errorMessage": error_msg,
+                },
+            })
+            return
+
+        self._log(f"Slot restore request {request_id[:8]}... (slot={slot_id}, file={filename})", "info")
+        start_time = time.time()
+
+        try:
+            result = await self.llm_proxy.restore_slot(slot_id, filename)
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            if "error" in result:
+                await self._send({
+                    "id": self._generate_message_id(),
+                    "type": "slot_restore_response",
+                    "timestamp": self._iso_timestamp(),
+                    "senderId": self.worker_id,
+                    "traceId": trace_id,
+                    "payload": {
+                        "requestId": request_id,
+                        "success": False,
+                        "errorMessage": result["error"],
+                        "latencyMs": latency_ms,
+                    },
+                })
+            else:
+                cold_start = result.get("cold_start", False)
+                await self._send({
+                    "id": self._generate_message_id(),
+                    "type": "slot_restore_response",
+                    "timestamp": self._iso_timestamp(),
+                    "senderId": self.worker_id,
+                    "traceId": trace_id,
+                    "payload": {
+                        "requestId": request_id,
+                        "success": True,
+                        "coldStart": cold_start,
+                        "tokensRestored": result.get("n_restored", 0),
+                        "bytesRead": result.get("n_read", 0),
+                        "latencyMs": latency_ms,
+                    },
+                })
+                if cold_start:
+                    self._log(f"Slot restore: cold start (no cache file) ({latency_ms}ms)", "info")
+                else:
+                    self._log(f"Slot restored: {result.get('n_restored', 0)} tokens ({latency_ms}ms)", "success")
+
+        except Exception as e:
+            logger.exception("Slot restore handling error")
+            self._log(f"Slot restore error: {e}", "error")
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "slot_restore_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "success": False,
+                    "errorMessage": str(e),
+                },
+            })
 
     async def _send(self, data: dict):
         """Send a message to the backend."""
