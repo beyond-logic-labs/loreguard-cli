@@ -94,6 +94,17 @@ def get_models_dir() -> Path:
     return models_dir
 
 
+def get_slot_cache_dir() -> Path:
+    """Get the directory for slot KV cache persistence.
+
+    ADR-0014: This directory stores KV cache snapshots for warmup context,
+    enabling cross-message caching without requiring multiple slots.
+    """
+    cache_dir = get_data_dir() / "kv_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
 def get_llama_server_path() -> Path:
     """Get the path to llama-server binary."""
     plat = get_platform()
@@ -272,10 +283,17 @@ async def download_llama_server(
 class LlamaServerProcess:
     """Manages a llama-server subprocess."""
 
-    def __init__(self, model_path: Path, port: int = 8080, lora_path: Optional[Path] = None):
+    def __init__(
+        self,
+        model_path: Path,
+        port: int = 8080,
+        lora_path: Optional[Path] = None,
+        context_size: int = 16384,
+    ):
         self.model_path = model_path
         self.port = port
         self.lora_path = lora_path
+        self.context_size = context_size
         self.process: Optional[subprocess.Popen] = None
         self._output_lines: list[str] = []
 
@@ -294,8 +312,19 @@ class LlamaServerProcess:
             "-m", str(self.model_path),
             "--port", str(self.port),
             "--host", "127.0.0.1",
-            "-c", "32768",  # Context length
+            "-c", str(self.context_size),  # Context length (configurable per game)
             "-ngl", "99",   # GPU layers (use all)
+            # ADR-0014: Enable prompt caching for KV cache prefix sharing
+            # Required for cache_prompt API parameter to work effectively
+            "--cache-prompt",
+            # ADR-0014: Enable slot save/restore for disk-based KV cache persistence
+            # This allows saving warmup context to disk and restoring across messages
+            "--slot-save-path", str(get_slot_cache_dir()),
+            # ADR-0014: Force single slot when slot caching is enabled
+            # This minimizes VRAM usage and ensures slot 0 pinning works correctly.
+            # Without this, llama-server may allocate multiple slots, each consuming
+            # KV cache memory proportional to context_size * model_hidden_dim.
+            "-np", "1",
         ]
 
         # Add LoRA adapter if specified

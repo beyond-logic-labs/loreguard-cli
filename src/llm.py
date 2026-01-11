@@ -14,11 +14,13 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, AsyncGenerator, Optional
 
 import httpx
 
 from .config import load_config
+from .llama_server import get_slot_cache_dir
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +69,11 @@ class LLMRequest:
     # JSON output mode
     force_json: bool = False
     json_schema: Optional[dict] = None
+
+    # ADR-0014: KV cache prefix sharing for warmup context
+    # When True, llama-server will cache the prompt prefix (system message)
+    # and reuse it across requests with identical prefixes.
+    cache_prompt: bool = False
 
 
 @dataclass
@@ -236,6 +243,17 @@ class LLMProxy:
             "presence_penalty": sampling.presence_penalty,
             "stop": req.stop,
         }
+
+        # ADR-0014: Enable KV cache prefix sharing for warmup context
+        if req.cache_prompt:
+            payload["cache_prompt"] = True
+            # Pin to slot 0 to ensure save/restore targets the correct slot.
+            # With -np 1 (enforced when slot caching enabled), this is redundant
+            # but kept for explicitness and defense-in-depth.
+            # NOTE: llama-server must be started with -np 1 for VRAM efficiency;
+            # id_slot alone does not prevent multi-slot allocation.
+            payload["id_slot"] = 0
+            logger.info("KV cache: cache_prompt=true, id_slot=0 (verify -np 1 on server)")
 
         # Disable thinking mode if requested (for Qwen3)
         if req.disable_thinking:
@@ -500,6 +518,7 @@ class LLMProxy:
             require_content=d.get("require_content", False),
             force_json=d.get("force_json", False),
             json_schema=d.get("json_schema"),
+            cache_prompt=d.get("cache_prompt", False),  # ADR-0014: KV cache prefix sharing
         )
 
     async def _generate_llamacpp(self, req: LLMRequest) -> dict:
@@ -529,6 +548,17 @@ class LLMProxy:
             "presence_penalty": sampling.presence_penalty,
             "stop": req.stop,
         }
+
+        # ADR-0014: Enable KV cache prefix sharing for warmup context
+        if req.cache_prompt:
+            payload["cache_prompt"] = True
+            # Pin to slot 0 to ensure save/restore targets the correct slot.
+            # With -np 1 (enforced when slot caching enabled), this is redundant
+            # but kept for explicitness and defense-in-depth.
+            # NOTE: llama-server must be started with -np 1 for VRAM efficiency;
+            # id_slot alone does not prevent multi-slot allocation.
+            payload["id_slot"] = 0
+            logger.info("KV cache: cache_prompt=true, id_slot=0 (verify -np 1 on server)")
 
         # Disable thinking mode if requested (for Qwen3)
         if req.disable_thinking:
@@ -697,3 +727,176 @@ class LLMProxy:
         except Exception:
             pass
         return []
+
+    # =========================================================================
+    # ADR-0014: Slot KV Cache Persistence
+    # =========================================================================
+
+    def _validate_cache_filename(self, filename: str) -> str:
+        """Validate and sanitize cache filename to prevent path traversal.
+
+        Security: Ensures filename is safe for filesystem operations.
+        Rejects any attempts at path traversal or injection.
+
+        Returns:
+            Sanitized filename
+
+        Raises:
+            ValueError: If filename is invalid or contains unsafe characters
+        """
+        import os
+        import re
+        from urllib.parse import quote
+
+        if not filename:
+            raise ValueError("Empty filename")
+
+        # Extract basename to prevent directory traversal
+        safe_name = os.path.basename(filename)
+
+        # Reject if basename differs (means path separators were present)
+        if safe_name != filename:
+            raise ValueError(f"Path traversal detected in filename: {filename}")
+
+        # Reject hidden files
+        if safe_name.startswith("."):
+            raise ValueError(f"Hidden files not allowed: {filename}")
+
+        # Validate format: only allow safe characters
+        if not re.match(r'^[a-zA-Z0-9_-]+\.bin$', safe_name):
+            raise ValueError(f"Invalid filename format: {filename}")
+
+        # URL-encode for safe transmission
+        return quote(safe_name, safe='')
+
+    async def save_slot(self, slot_id: int, filename: str) -> dict:
+        """Save a slot's KV cache to disk.
+
+        ADR-0014: This enables cross-message caching by persisting the warmup
+        context KV state. Call after Pass 4 (non-JSON) to preserve the cache
+        before Pass 5 (JSON) overwrites it.
+
+        Args:
+            slot_id: The slot to save (usually 0)
+            filename: Cache filename (e.g., "npc_{id}_{hash}.bin")
+
+        Returns:
+            Dict with n_saved (tokens), n_written (bytes), timings, or error
+        """
+        try:
+            # Validate and URL-encode filename
+            safe_filename = self._validate_cache_filename(filename)
+
+            response = await self.client.post(
+                f"{self.endpoint}/slots/{slot_id}?action=save&filename={safe_filename}",
+                timeout=30.0,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                logger.debug(
+                    f"Slot {slot_id} saved: {data.get('n_saved', 0)} tokens, "
+                    f"{data.get('n_written', 0)} bytes"
+                )
+                # ADR-0014: Clean up stale cache files for this NPC
+                # Run in background to not block the response
+                self._cleanup_stale_cache_files(filename)
+                return data
+            else:
+                error = response.text[:200]
+                logger.warning(f"Failed to save slot {slot_id}: {response.status_code} - {error}")
+                return {"error": f"Save failed: {response.status_code}"}
+        except Exception as e:
+            logger.warning(f"Exception saving slot {slot_id}: {e}")
+            return {"error": str(e)}
+
+    def _cleanup_stale_cache_files(self, current_filename: str) -> None:
+        """Remove stale cache files for ALL NPCs, keeping only the most recent per NPC.
+
+        ADR-0014: After saving, clean up old cache files to prevent disk accumulation.
+        For each NPC, keep only the newest cache file (by modification time).
+
+        Filename format: npc_{npc_id}_{hash}.bin
+        """
+        try:
+            cache_dir = get_slot_cache_dir()
+            all_cache_files = list(cache_dir.glob("npc_*.bin"))
+
+            if not all_cache_files:
+                return
+
+            # Group files by NPC prefix (everything before the last underscore)
+            # Example: npc_zero_a1b2c3d4.bin -> npc_zero
+            npc_files: dict[str, list[Path]] = {}
+            for cache_file in all_cache_files:
+                parts = cache_file.name.rsplit('_', 1)
+                if len(parts) == 2 and parts[0].startswith('npc_'):
+                    npc_prefix = parts[0]
+                    if npc_prefix not in npc_files:
+                        npc_files[npc_prefix] = []
+                    npc_files[npc_prefix].append(cache_file)
+
+            # For each NPC, keep only the newest file
+            removed_count = 0
+            for npc_prefix, files in npc_files.items():
+                if len(files) <= 1:
+                    continue  # Nothing to clean up
+
+                # Sort by modification time, newest first
+                files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+
+                # Delete all but the newest (files[0])
+                for stale_file in files[1:]:
+                    try:
+                        stale_file.unlink()
+                        removed_count += 1
+                        logger.debug(f"Removed stale cache: {stale_file.name}")
+                    except OSError as e:
+                        logger.warning(f"Failed to remove {stale_file.name}: {e}")
+
+            if removed_count > 0:
+                logger.info(f"Cleaned up {removed_count} stale cache file(s)")
+
+        except Exception as e:
+            # Don't fail the save operation if cleanup fails
+            logger.warning(f"Cache cleanup error (non-fatal): {e}")
+
+    async def restore_slot(self, slot_id: int, filename: str) -> dict:
+        """Restore a slot's KV cache from disk.
+
+        ADR-0014: This enables cross-message caching by restoring the warmup
+        context KV state. Call before Pass 2 to warm the cache from a previous
+        conversation turn.
+
+        Args:
+            slot_id: The slot to restore to (usually 0)
+            filename: Cache filename (e.g., "npc_{id}_{hash}.bin")
+
+        Returns:
+            Dict with n_restored (tokens), n_read (bytes), timings, or error
+        """
+        try:
+            # Validate and URL-encode filename
+            safe_filename = self._validate_cache_filename(filename)
+
+            response = await self.client.post(
+                f"{self.endpoint}/slots/{slot_id}?action=restore&filename={safe_filename}",
+                timeout=30.0,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                logger.debug(
+                    f"Slot {slot_id} restored: {data.get('n_restored', 0)} tokens, "
+                    f"{data.get('n_read', 0)} bytes"
+                )
+                return data
+            elif response.status_code == 404:
+                # Cache file doesn't exist - not an error, just cold start
+                logger.debug(f"No cache file for slot {slot_id}: {filename}")
+                return {"cold_start": True}
+            else:
+                error = response.text[:200]
+                logger.warning(f"Failed to restore slot {slot_id}: {response.status_code} - {error}")
+                return {"error": f"Restore failed: {response.status_code}"}
+        except Exception as e:
+            logger.warning(f"Exception restoring slot {slot_id}: {e}")
+            return {"error": str(e)}

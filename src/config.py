@@ -47,6 +47,7 @@ class LoreguardConfig:
     model_path: str = ""  # Store as string for JSON serialization
     adapter_path: str = ""  # Optional LoRA adapter path
     dev_mode: bool = False
+    context_size: int = 16384  # llama-server context window size (configurable per game)
 
     def save(self) -> None:
         """Save configuration to disk."""
@@ -67,6 +68,7 @@ class LoreguardConfig:
                     model_path=data.get("model_path", ""),
                     adapter_path=data.get("adapter_path", ""),
                     dev_mode=data.get("dev_mode", False),
+                    context_size=data.get("context_size", 16384),
                 )
             except (json.JSONDecodeError, KeyError):
                 pass
