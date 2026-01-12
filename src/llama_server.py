@@ -314,9 +314,6 @@ class LlamaServerProcess:
             "--host", "127.0.0.1",
             "-c", str(self.context_size),  # Context length (configurable per game)
             "-ngl", "99",   # GPU layers (use all)
-            # ADR-0014: Enable prompt caching for KV cache prefix sharing
-            # Required for cache_prompt API parameter to work effectively
-            "--cache-prompt",
             # ADR-0014: Enable slot save/restore for disk-based KV cache persistence
             # This allows saving warmup context to disk and restoring across messages
             "--slot-save-path", str(get_slot_cache_dir()),

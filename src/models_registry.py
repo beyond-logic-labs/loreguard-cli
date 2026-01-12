@@ -124,17 +124,38 @@ def get_recommended_model() -> ModelInfo:
     return SUPPORTED_MODELS[0]
 
 
-def get_available_models() -> list[ModelInfo]:
+def get_available_models(use_discovery: bool = True) -> list[ModelInfo]:
     """Get models available for the current platform.
+
+    Args:
+        use_discovery: If True, also fetch models from HuggingFace dynamically.
+                      Falls back to static list on network errors.
 
     Filters out MLX models on non-Apple Silicon platforms.
     """
     available = []
+
+    # Start with static models
     for model in SUPPORTED_MODELS:
         # Skip Apple Silicon-only models on other platforms
         if model.requires_apple_silicon and not is_apple_silicon():
             continue
         available.append(model)
+
+    # Try dynamic discovery
+    if use_discovery:
+        try:
+            from .hf_discovery import discover_models
+            discovered = discover_models(use_cache=True)
+            # Add discovered models that aren't already in the list
+            existing_ids = {m.id for m in available}
+            for model in discovered:
+                if model.id not in existing_ids:
+                    available.append(model)
+        except Exception as e:
+            # Silently fall back to static list on any error
+            pass
+
     return available
 
 

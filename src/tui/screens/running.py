@@ -46,6 +46,7 @@ class RunningScreen(Screen):
             Static("", id="status-model"),
             Static("", id="status-backend"),
             Static("", id="status-nli"),
+            Static("", id="status-intent"),
             Static("", id="status-mode"),
             Static("", classes="spacer"),
             Static("", id="status-requests"),
@@ -189,6 +190,7 @@ class RunningScreen(Screen):
                 from ...tunnel import BackendTunnel
                 from ...llm import LLMProxy
                 from ...nli import NLIService
+                from ...intent_classifier import IntentClassifier
 
                 llm_proxy = LLMProxy("http://127.0.0.1:8080")
 
@@ -214,6 +216,28 @@ class RunningScreen(Screen):
                     self._log(f"NLI error: {e}", "error")
                     nli_service = None
 
+                # Load Intent Classifier (ADR-0010)
+                intent_classifier = None
+                self._update_status("intent", "Intent", "Loading...", "info")
+                self._log("Loading Intent classifier...", "info")
+                try:
+                    intent_classifier = IntentClassifier()
+                    loop = asyncio.get_event_loop()
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        with suppress_external_output():
+                            intent_loaded = await loop.run_in_executor(pool, intent_classifier.load_model)
+                    if intent_loaded:
+                        self._update_status("intent", "Intent", f"Ready ({intent_classifier.device})", "success")
+                        self._log(f"Intent classifier ready on {intent_classifier.device}", "success")
+                    else:
+                        self._update_status("intent", "Intent", "Failed", "warning")
+                        self._log("Intent classifier failed to load", "warning")
+                        intent_classifier = None
+                except Exception as e:
+                    self._update_status("intent", "Intent", f"Error: {e}", "warning")
+                    self._log(f"Intent classifier error: {e}", "error")
+                    intent_classifier = None
+
                 # Get model ID for backend
                 model_id = app.model_path.stem
 
@@ -224,6 +248,7 @@ class RunningScreen(Screen):
                     worker_token=app.api_token,
                     model_id=model_id,
                     nli_service=nli_service,
+                    intent_classifier=intent_classifier,
                     log_callback=self._log,
                 )
                 self._tunnel.on_request_complete = self._on_request_complete

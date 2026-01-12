@@ -23,6 +23,8 @@ class LoreguardFooter(Static):
 
     llm_model: reactive[str] = reactive("", layout=True)
     llm_adapter: reactive[str] = reactive("", layout=True)
+    nli_model: reactive[str] = reactive("", layout=True)
+    intent_model: reactive[str] = reactive("", layout=True)
     api_version: reactive[str] = reactive("", layout=True)
 
     def on_mount(self) -> None:
@@ -42,6 +44,21 @@ class LoreguardFooter(Static):
         adapter_path = getattr(app, "adapter_path", None)
         adapter_name = adapter_path.stem if adapter_path else ""
 
+        # NLI model (citation check)
+        nli_name = ""
+        nli_service = getattr(tunnel, "nli_service", None) if tunnel else None
+        if nli_service and getattr(nli_service, "is_loaded", False):
+            nli_name = getattr(nli_service, "model_name", "")
+
+        # Intent classifier model
+        intent_name = ""
+        intent_classifier = getattr(tunnel, "intent_classifier", None) if tunnel else None
+        if intent_classifier and getattr(intent_classifier, "is_loaded", False):
+            intent_name = getattr(intent_classifier, "model_name", "")
+            # Shorten model name for display
+            if "/" in intent_name:
+                intent_name = intent_name.split("/")[-1]
+
         # Backend API version
         api_ver = getattr(tunnel, "backend_version", "") if tunnel else ""
 
@@ -50,12 +67,16 @@ class LoreguardFooter(Static):
             self.llm_model = llm_name
         if adapter_name != self.llm_adapter:
             self.llm_adapter = adapter_name
+        if nli_name != self.nli_model:
+            self.nli_model = nli_name
+        if intent_name != self.intent_model:
+            self.intent_model = intent_name
         if api_ver != self.api_version:
             self.api_version = api_ver
 
     def render(self) -> Table:
-        """Render footer with LLM on left, server version on right."""
-        # Left side: LLM + adapter
+        """Render footer with LLM + NLI/Intent on left, server version on right."""
+        # Left side: LLM + adapter + NLI + Intent
         left = Text()
         if self.llm_model:
             left.append("LLM:", style=FG_DIM)
@@ -63,6 +84,18 @@ class LoreguardFooter(Static):
             if self.llm_adapter:
                 left.append(" + ", style=FG_DIM)
                 left.append(self.llm_adapter, style=GREEN)
+
+        if self.nli_model:
+            if left:
+                left.append(" ", style=FG_DIM)
+            left.append("NLI:", style=FG_DIM)
+            left.append(self.nli_model, style=FG)
+
+        if self.intent_model:
+            if left:
+                left.append(" ", style=FG_DIM)
+            left.append("Intent:", style=FG_DIM)
+            left.append(self.intent_model, style=FG)
 
         # Right side: Server version
         right = Text()
