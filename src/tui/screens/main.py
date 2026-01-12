@@ -223,8 +223,12 @@ class MainScreen(Screen):
                 config.set_adapter_path(adapter_path)
                 config.save()
             else:
-                # No adapter selected (skipped)
+                # No adapter selected (skipped or cancelled)
                 app.adapter_path = None
+                # Clear adapter from config
+                config = LoreguardConfig.load()
+                config.set_adapter_path(None)
+                config.save()
 
             self._show_nli_setup()
 
@@ -956,6 +960,7 @@ class MainScreen(Screen):
         config = LoreguardConfig.load()
         config.api_token = ""
         config.model_path = ""
+        config.adapter_path = ""
         config.dev_mode = False
         config.save()
 
@@ -963,6 +968,7 @@ class MainScreen(Screen):
         app.api_token = ""
         app.worker_id = ""
         app.model_path = None
+        app.adapter_path = None
         app.dev_mode = False
 
         self._update_status("Logged out")
