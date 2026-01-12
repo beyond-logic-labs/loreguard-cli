@@ -581,6 +581,9 @@ class BackendTunnel:
             thinking = ""
             usage = {}
 
+            # Diagnostic: track inter-token timing to identify stalls
+            last_token_time = time.time()
+
             async for chunk in self.llm_proxy.generate_streaming(llm_request):
                 chunk_type = chunk.get("type")
 
@@ -590,7 +593,18 @@ class BackendTunnel:
                         content_parts.append(token)
                         token_count += 1
 
+                        # Diagnostic: check for slow token generation
+                        now = time.time()
+                        token_gap = now - last_token_time
+                        if token_gap > 1.0:
+                            # Large gap between tokens - potential stall indicator
+                            logger.warning(
+                                f"[Stream {request_id[:8]}] Token gap: {token_gap:.2f}s after {token_count} tokens"
+                            )
+                        last_token_time = now
+
                         # Send token message to backend
+                        send_start = time.time()
                         await self._send({
                             "id": self._generate_message_id(),
                             "type": "llm_token",
@@ -603,6 +617,12 @@ class BackendTunnel:
                                 "index": chunk.get("index", token_count - 1),
                             },
                         })
+                        send_elapsed = time.time() - send_start
+                        if send_elapsed > 0.5:
+                            # Slow WebSocket send - potential backpressure
+                            logger.warning(
+                                f"[Stream {request_id[:8]}] Slow WebSocket send: {send_elapsed:.2f}s at token {token_count}"
+                            )
 
                 elif chunk_type == "done":
                     # Final chunk with complete content
@@ -1377,8 +1397,15 @@ class BackendTunnel:
                 },
             })
 
-    async def _send(self, data: dict):
-        """Send a message to the backend."""
+    async def _send(self, data: dict, timeout: float = 5.0):
+        """Send a message to the backend with timeout.
+
+        Args:
+            data: Message to send as dict
+            timeout: Maximum seconds to wait for send (default 5s)
+                     This prevents indefinite hangs if WebSocket is blocked
+                     (e.g., Cloudflare tunnel backpressure)
+        """
         # Capture reference to avoid race condition
         ws = self.ws
         if not ws or not self.connected:
@@ -1386,7 +1413,13 @@ class BackendTunnel:
             return
 
         try:
-            await ws.send(json.dumps(data))
+            # Add timeout to prevent indefinite hangs on blocked WebSocket
+            # This is critical for streaming - if send blocks, we stop reading
+            # from llama-server and the entire pipeline stalls
+            await asyncio.wait_for(ws.send(json.dumps(data)), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.error(f"WebSocket send timed out after {timeout}s - connection may be blocked")
+            self.connected = False
         except Exception as e:
             logger.error(f"Send error: {e}")
             self.connected = False
