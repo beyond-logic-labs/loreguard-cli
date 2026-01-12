@@ -789,6 +789,7 @@ class LLMProxy:
 
             response = await self.client.post(
                 f"{self.endpoint}/slots/{slot_id}?action=save&filename={safe_filename}",
+                json={},  # llama-server expects JSON body
                 timeout=30.0,
             )
             if response.status_code == 200:
@@ -880,6 +881,7 @@ class LLMProxy:
 
             response = await self.client.post(
                 f"{self.endpoint}/slots/{slot_id}?action=restore&filename={safe_filename}",
+                json={},  # llama-server expects JSON body
                 timeout=30.0,
             )
             if response.status_code == 200:
