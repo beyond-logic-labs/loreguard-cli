@@ -199,6 +199,7 @@ class UnifiedPaletteModal(ModalScreen[tuple[str, Any] | None]):
                 PaletteItem("cmd-restart", "Restart Server", "", "command", "", ""),
                 PaletteItem("cmd-logout", "Logout", "", "command", "", ""),
                 PaletteItem("cmd-theme", "Change Theme", "", "command", "ctrl+t", ""),
+                PaletteItem("cmd-config", "Show Config Path", "", "command", "", ""),
                 PaletteItem("cmd-keys", "Keys", "", "command", "", ""),
                 PaletteItem("cmd-screenshot", "Screenshot", "", "command", "", ""),
                 PaletteItem("cmd-quit", "Quit", "", "command", "ctrl+c", ""),

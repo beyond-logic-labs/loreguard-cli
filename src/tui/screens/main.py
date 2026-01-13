@@ -715,6 +715,19 @@ class MainScreen(Screen):
         elif cmd_id == "cmd-screenshot":
             path = self.app.save_screenshot()
             self._update_status(f"Screenshot saved: {path}")
+        elif cmd_id == "cmd-config":
+            self._show_config_path()
+
+    def _show_config_path(self) -> None:
+        """Show the config file path."""
+        from ...config import get_config_path, get_data_dir
+
+        config_path = get_config_path()
+        data_dir = get_data_dir()
+
+        self._log(f"Config file: {config_path}")
+        self._log(f"Data dir: {data_dir}")
+        self._update_status(f"Config: {config_path}", log=False)
 
     def _open_npc_chat(self) -> None:
         """Open NPC picker - fetches NPCs from Loreguard API."""
