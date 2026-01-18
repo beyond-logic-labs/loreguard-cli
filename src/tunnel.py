@@ -575,6 +575,10 @@ class BackendTunnel:
                 if payload.get("jsonSchema"):
                     llm_request["json_schema"] = payload["jsonSchema"]
 
+            # Pass through thinking mode control (important for JSON output)
+            if payload.get("disableThinking"):
+                llm_request["disable_thinking"] = True
+
             # Stream tokens from LLM
             token_count = 0
             content_parts = []
@@ -1155,6 +1159,10 @@ class BackendTunnel:
             request["force_json"] = True
             if payload.get("jsonSchema"):
                 request["json_schema"] = payload["jsonSchema"]
+
+        # Pass through thinking mode control (important for JSON output)
+        if payload.get("disableThinking"):
+            request["disable_thinking"] = True
 
         return request
 
