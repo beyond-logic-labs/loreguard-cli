@@ -9,13 +9,12 @@ from typing import TYPE_CHECKING
 
 import httpx
 from textual.app import ComposeResult
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Vertical, Horizontal, VerticalScroll
 from textual.widgets import Static, Input
 from textual.binding import Binding
 from rich.text import Text
 
-from ..styles import PURPLE, CYAN, PINK, FG, FG_DIM, GREEN
-from .banner import get_gradient_color
+from ..styles import CYAN, FG, FG_DIM, GREEN
 from ...runtime import RuntimeInfo
 
 if TYPE_CHECKING:
@@ -37,23 +36,283 @@ def get_local_proxy_url() -> str | None:
     return None
 
 
+class DebugPassWidget(Static):
+    """A single collapsible debug pass entry."""
+
+    DEFAULT_CSS = f"""
+    DebugPassWidget {{
+        width: 100%;
+        height: auto;
+        padding: 0;
+        margin: 0;
+    }}
+
+    DebugPassWidget .pass-header {{
+        width: 100%;
+        height: 1;
+    }}
+
+    DebugPassWidget .pass-details {{
+        padding: 0 0 0 2;
+        color: {FG_DIM};
+    }}
+    """
+
+    def __init__(self, pass_num: str, name: str, payload: dict) -> None:
+        super().__init__()
+        self._pass_num = pass_num
+        self._name = name
+        self._payload = payload
+        self._expanded = True  # Start expanded
+
+    def compose(self) -> ComposeResult:
+        yield Static(self._render_header(), classes="pass-header")
+        # Show details by default (expanded)
+        details_text = self._render_details()
+        if details_text:
+            yield Static(details_text, classes="pass-details")
+
+    def _render_header(self) -> Text:
+        """Render the pass header line."""
+        text = Text()
+        payload = self._payload
+        duration = payload.get("durationMs", 0)
+        skipped = payload.get("skipped", False)
+        error = payload.get("error", False)
+        retry_of = payload.get("retryOf", 0)
+        retry_suffix = f" ↻{retry_of}" if retry_of > 0 else ""
+
+        # Expand/collapse indicator
+        indicator = "▼" if self._expanded else "►"
+
+        if skipped:
+            text.append(f"{indicator} ", style="#555566")
+            text.append(f"Pass {self._pass_num}", style="#555566")
+            text.append(f" {self._name} ", style="#555566")
+            text.append("Skipped", style="#555566")
+        elif error:
+            text.append(f"{indicator} ", style="#AA5555")
+            text.append(f"Pass {self._pass_num}", style="#AA5555")
+            text.append(f" {self._name} ", style="#AA5555")
+            text.append(f"Error{retry_suffix}", style="#AA5555")
+        else:
+            text.append(f"{indicator} ", style="#888899")
+            text.append(f"Pass {self._pass_num}", style="#AAAAAA")
+            text.append(f" {self._name} ", style="#888899")
+            text.append(f"({duration}ms){retry_suffix}", style="#666677")
+
+        return text
+
+    def _render_details(self) -> Text:
+        """Render the expanded details."""
+        text = Text()
+        payload = self._payload
+
+        # Error message
+        if error_msg := payload.get("errorMsg"):
+            text.append(f"{error_msg}\n", style="#FF5555")
+
+        # Intent output (Pass 0)
+        if output := payload.get("output"):
+            text.append(f"Output:\n", style=FG_DIM)
+            for line in output.split("\n"):
+                text.append(f"  {line}\n", style=FG)
+
+        # Query rewrite (Pass 1)
+        if query_rewrite := payload.get("queryRewrite"):
+            text.append(f"Query: {query_rewrite}\n", style=FG)
+
+        # Sources (Pass 1)
+        if sources := payload.get("sources"):
+            text.append(f"Sources ({len(sources)}):\n", style=FG_DIM)
+            for src in sources:
+                score = src.get("score", 0)
+                path = src.get("path", "")
+                text.append(f"  {path} ({score:.2f})\n", style=FG_DIM)
+
+        # Evidence blocks (Pass 4)
+        if evidence_blocks := payload.get("evidenceBlocks"):
+            text.append(f"Evidence ({len(evidence_blocks)}):\n", style=FG_DIM)
+            for block in evidence_blocks:
+                block_text = block.get("text", "")
+                text.append(f"  \"{block_text}\"\n", style=FG_DIM)
+
+        # Citation answer (Pass 4)
+        if citation_answer := payload.get("citationAnswer"):
+            text.append(f"Citation answer:\n", style=FG_DIM)
+            for line in citation_answer.split("\n"):
+                text.append(f"  {line}\n", style=FG)
+
+        # Verdict (Pass 2.5/4.5)
+        if verdict := payload.get("verdict"):
+            if verdict == "APPROVED":
+                faith = payload.get("faithfulness", 0)
+                text.append(f"✓ APPROVED (faithfulness: {faith:.2f})\n", style=GREEN)
+            else:
+                issues = payload.get("issues", [])
+                text.append(f"✗ ISSUES ({len(issues)})\n", style="#FF5555")
+                for issue in issues:
+                    claim = issue.get("claim", "")
+                    claim_type = issue.get("claimType", "")
+                    severity = issue.get("severity", "")
+                    type_info = f" [{claim_type}]" if claim_type else ""
+                    sev_info = f" ({severity})" if severity else ""
+                    text.append(f"  - {claim}{type_info}{sev_info}\n", style=FG_DIM)
+
+        # Fail-closed info (Pass 4.5)
+        if fail_closed := payload.get("failClosed"):
+            reason = fail_closed.get("reason", "UNKNOWN")
+            claims_stripped = fail_closed.get("claimsStripped", [])
+            original_len = fail_closed.get("originalLen", 0)
+            final_len = fail_closed.get("finalLen", 0)
+            text.append(f"⚠ FAIL-CLOSED: {reason}\n", style="#FFAA00")
+            text.append(f"  Stripped {len(claims_stripped)} claims\n", style=FG_DIM)
+            text.append(f"  {original_len} → {final_len} chars\n", style=FG_DIM)
+            for claim in claims_stripped:
+                text.append(f"  • {claim}\n", style=FG_DIM)
+
+        return text
+
+    def on_click(self) -> None:
+        """Toggle expanded state."""
+        self._expanded = not self._expanded
+
+        # Update header
+        header = self.query_one(".pass-header", Static)
+        header.update(self._render_header())
+
+        # Show/hide details
+        try:
+            details = self.query_one(".pass-details", Static)
+            details.remove()
+        except Exception:
+            if self._expanded:
+                details = Static(self._render_details(), classes="pass-details")
+                self.mount(details)
+
+
+class DebugPanel(Vertical):
+    """Right panel showing pipeline debug information."""
+
+    DEFAULT_CSS = """
+    DebugPanel {
+        width: 1fr;
+        height: 100%;
+        padding: 0 1;
+        margin: 0;
+        border: solid #333344;
+        background: #1a1b24;
+    }
+
+    DebugPanel .debug-header {
+        height: 1;
+        width: 100%;
+        padding: 0;
+        border-bottom: solid #333344;
+    }
+
+    DebugPanel .debug-scroll {
+        height: 1fr;
+        width: 100%;
+        padding: 0;
+    }
+
+    DebugPanel .debug-summary {
+        height: 1;
+        width: 100%;
+        padding: 0;
+        border-top: solid #333344;
+    }
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._passes: list[DebugPassWidget] = []
+        self._summary_data: dict = {}
+
+    def compose(self) -> ComposeResult:
+        header = Text()
+        header.append("Pipeline Debug ", style="bold #888899")
+        header.append("[^D]", style=FG_DIM)
+        yield Static(header, classes="debug-header")
+        yield VerticalScroll(id="debug-scroll", classes="debug-scroll")
+        yield Static("", id="debug-summary", classes="debug-summary")
+
+    def clear(self) -> None:
+        """Clear all debug info."""
+        self._passes = []
+        self._summary_data = {}
+        try:
+            scroll = self.query_one("#debug-scroll", VerticalScroll)
+            scroll.remove_children()
+            summary = self.query_one("#debug-summary", Static)
+            summary.update("")
+        except Exception:
+            pass
+
+    def add_pass(self, payload: dict) -> None:
+        """Add a pipeline pass to the debug panel."""
+        pass_num = str(payload.get("pass", "?"))
+        name = payload.get("name", "Unknown")
+
+        widget = DebugPassWidget(pass_num, name, payload)
+        self._passes.append(widget)
+
+        try:
+            scroll = self.query_one("#debug-scroll", VerticalScroll)
+            scroll.mount(widget)
+            scroll.scroll_end(animate=False)
+        except Exception:
+            pass
+
+    def set_summary(self, total_ms: int, backend_ms: int, tokens: int, verified: bool) -> None:
+        """Set the summary line at the bottom."""
+        self._summary_data = {
+            "total_ms": total_ms,
+            "backend_ms": backend_ms,
+            "tokens": tokens,
+            "verified": verified,
+        }
+
+        text = Text()
+        indicator = "●" if verified else "○"
+        text.append(f"✓ ", style=GREEN)
+        text.append(f"{total_ms}ms total  {backend_ms}ms backend  {tokens} tok  {indicator}", style=FG_DIM)
+
+        try:
+            summary = self.query_one("#debug-summary", Static)
+            summary.update(text)
+        except Exception:
+            pass
+
+    def set_status(self, message: str, style: str = CYAN) -> None:
+        """Set a status message in the summary."""
+        try:
+            summary = self.query_one("#debug-summary", Static)
+            summary.update(Text(message, style=style))
+        except Exception:
+            pass
+
+
 class NPCChat(Vertical):
     """Embedded NPC chat widget for the main screen.
 
     Uses the Loreguard API for grounded NPC conversations.
+    Supports two-column layout in verbose mode with debug panel.
     """
 
     BINDINGS = [
         Binding("escape", "close_chat", "Close", show=False),
+        Binding("ctrl+d", "toggle_debug", "Toggle Debug", show=False),
     ]
 
     DEFAULT_CSS = f"""
     NPCChat {{
         width: 100%;
         height: 1fr;
-        border: solid {FG_DIM};
         background: transparent;
         display: none;
+        padding: 0 1;
     }}
 
     NPCChat.visible {{
@@ -63,6 +322,25 @@ class NPCChat(Vertical):
     NPCChat .chat-header {{
         height: 1;
         padding: 0 1;
+    }}
+
+    NPCChat .chat-main {{
+        height: 1fr;
+        width: 100%;
+    }}
+
+    NPCChat .chat-column {{
+        width: 1fr;
+        height: 100%;
+        border: solid #333344;
+        background: #1a1b24;
+        margin: 0 1 0 0;
+    }}
+
+    NPCChat .chat-column-header {{
+        height: 1;
+        padding: 0 1;
+        border-bottom: solid #333344;
     }}
 
     NPCChat .chat-container {{
@@ -75,16 +353,28 @@ class NPCChat(Vertical):
 
     NPCChat .chat-message {{
         padding: 0;
-        margin: 0 0 1 0;
+        margin: 0;
         width: 100%;
-        overflow: hidden;
+        height: auto;
+    }}
+
+    NPCChat .user-message {{
+        padding: 0;
+        margin: 0;
+    }}
+
+    NPCChat .npc-message {{
+        padding: 0;
+        margin: 0;
     }}
 
     NPCChat Input {{
         width: 100%;
         border: none;
+        border-top: solid #333344;
         background: transparent;
-        padding: 0;
+        padding: 0 1;
+        margin: 0;
     }}
 
     NPCChat .chat-footer {{
@@ -96,6 +386,18 @@ class NPCChat(Vertical):
     NPCChat .status-line {{
         height: 1;
         padding: 0 1;
+    }}
+
+    NPCChat DebugPanel {{
+        display: none;
+    }}
+
+    NPCChat.debug-visible DebugPanel {{
+        display: block;
+    }}
+
+    NPCChat.debug-visible .chat-column {{
+        width: 1fr;
     }}
     """
 
@@ -109,33 +411,46 @@ class NPCChat(Vertical):
         self._player_handle = "Player"
         self._generating = False
         self._visible = False
+        self._debug_visible = False
 
     def compose(self) -> ComposeResult:
-        """Compose the chat widget."""
+        """Compose the chat widget with optional debug panel."""
         yield Static(self._render_header(), classes="chat-header")
-        yield VerticalScroll(id="npc-chat-container", classes="chat-container")
-        yield Static("", id="npc-status-line", classes="status-line")
-        yield Input(placeholder=f"> Say something to {self._npc_name}...", id="npc-chat-input")
+
+        with Horizontal(classes="chat-main"):
+            with Vertical(classes="chat-column"):
+                yield Static(self._render_chat_column_header(), classes="chat-column-header")
+                yield VerticalScroll(id="npc-chat-container", classes="chat-container")
+                yield Static("", id="npc-status-line", classes="status-line")
+                yield Input(placeholder=f"> Say something to {self._npc_name}...", id="npc-chat-input")
+            yield DebugPanel()
+
         yield Static(self._render_footer(), classes="chat-footer")
 
-    def _render_header(self) -> Text:
-        """Render header with NPC name and gradient line."""
+    def _render_chat_column_header(self) -> Text:
+        """Render the chat column header."""
         text = Text()
-        text.append(f"Chat with {self._npc_name} ", style=f"bold {PINK}")
-        remaining = 60 - len(self._npc_name) - 11
-        for i in range(remaining):
-            color = get_gradient_color(i / remaining)
-            text.append("#", style=color)
+        text.append("Conversation", style="bold #888899")
+        return text
+
+    def _render_header(self) -> Text:
+        """Render header with NPC name."""
+        text = Text()
+        text.append(f"Chat with ", style=FG_DIM)
+        text.append(f"{self._npc_name}", style=f"bold {FG}")
         return text
 
     def _render_footer(self) -> Text:
         """Render footer with key hints."""
         text = Text()
-        text.append("enter", style=f"bold {FG}")
-        text.append(" send ", style=FG_DIM)
-        text.append("  ")
-        text.append("esc", style=f"bold {FG}")
+        text.append(" enter ", style=f"bold {FG} on #44475A")
+        text.append(" send", style=FG_DIM)
+        text.append("   ")
+        text.append(" esc ", style=f"bold {FG} on #44475A")
         text.append(" close", style=FG_DIM)
+        text.append("   ")
+        text.append(" ^D ", style=f"bold {FG} on #44475A")
+        text.append(" debug", style=FG_DIM)
         return text
 
     def show(self) -> None:
@@ -145,14 +460,18 @@ class NPCChat(Vertical):
         # Add class to parent screen to adjust layout
         if self.screen:
             self.screen.add_class("chat-open")
-        # Focus the input - no welcome message for API-based NPCs
-        # The NPC's personality is defined in Loreguard, not here
+        # Show debug panel if verbose mode
+        if self._verbose:
+            self._debug_visible = True
+            self.add_class("debug-visible")
+        # Focus the input
         self.query_one("#npc-chat-input", Input).focus()
 
     def hide(self) -> None:
         """Hide the chat widget."""
         self._visible = False
         self.remove_class("visible")
+        self.remove_class("debug-visible")
         # Remove class from parent screen
         if self.screen:
             self.screen.remove_class("chat-open")
@@ -163,6 +482,15 @@ class NPCChat(Vertical):
             self.hide()
         else:
             self.show()
+
+    def action_toggle_debug(self) -> None:
+        """Toggle debug panel visibility."""
+        self._debug_visible = not self._debug_visible
+        if self._debug_visible:
+            self._verbose = True  # Enable verbose API requests when debug is shown
+            self.add_class("debug-visible")
+        else:
+            self.remove_class("debug-visible")
 
     def set_npc(self, npc_id: str, name: str, api_token: str, verbose: bool = False) -> None:
         """Set the NPC and reset chat.
@@ -183,6 +511,10 @@ class NPCChat(Vertical):
         header = self.query_one(".chat-header", Static)
         header.update(self._render_header())
 
+        # Update footer (shows ^D hint in verbose mode)
+        footer = self.query_one(".chat-footer", Static)
+        footer.update(self._render_footer())
+
         # Update input placeholder
         input_widget = self.query_one("#npc-chat-input", Input)
         input_widget.placeholder = f"> Say something to {name}..."
@@ -195,6 +527,13 @@ class NPCChat(Vertical):
         status = self.query_one("#npc-status-line", Static)
         status.update("")
 
+        # Clear debug panel
+        try:
+            debug_panel = self.query_one(DebugPanel)
+            debug_panel.clear()
+        except Exception:
+            pass
+
     @property
     def is_visible(self) -> bool:
         """Check if chat is visible."""
@@ -206,14 +545,15 @@ class NPCChat(Vertical):
 
         text = Text()
         if role == "user":
-            text.append("You: ", style=f"bold {CYAN}")
-            text.append(content, style=FG)
+            text.append("You: ", style=f"bold {FG}")
+            text.append(content, style=FG_DIM)
+            css_class = "chat-message user-message"
         else:
-            text.append(f"{self._npc_name}: ", style=f"bold {PINK}")
+            text.append(f"{self._npc_name}: ", style=f"bold {FG}")
             text.append(content, style=FG)
+            css_class = "chat-message npc-message"
 
-        # Use Static for better text wrapping
-        widget = Static(text, classes="chat-message")
+        widget = Static(text, classes=css_class)
         container.mount(widget)
         container.scroll_end(animate=False)
 
@@ -249,11 +589,62 @@ class NPCChat(Vertical):
         input_widget.cursor_position = 0
         input_widget.focus()
         self._add_user_message(message)
+
+        # Clear debug panel for new request
+        if self._verbose:
+            try:
+                debug_panel = self.query_one(DebugPanel)
+                debug_panel.clear()
+                debug_panel.set_status("Processing...")
+            except Exception:
+                pass
+
         self._generate_response(message)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle input submission."""
         self._submit_message(event.input)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Handle input changes - specifically for / key to open palette."""
+        if event.input.value == "/":
+            if self._visible and event.input.id == "npc-chat-input":
+                self._open_palette()
+
+    def on_key(self, event) -> None:
+        """Handle key events - capture Ctrl+D for debug toggle."""
+        if event.key == "ctrl+d" and self._visible:
+            self.action_toggle_debug()
+            event.prevent_default()
+            event.stop()
+
+    def _open_palette(self) -> None:
+        """Open the unified palette for NPC commands."""
+        if not self.screen:
+            return
+
+        try:
+            from ..modals.unified_palette import UnifiedPaletteModal
+
+            def handle_result(result: tuple | None) -> None:
+                if not result:
+                    return
+
+                category, value = result
+                if category == "command":
+                    self._handle_command(value)
+
+            self.app.push_screen(
+                UnifiedPaletteModal(title="NPC Commands", show_models=False, show_commands=True),
+                handle_result
+            )
+        except Exception:
+            pass
+
+    def _handle_command(self, cmd_id: str) -> None:
+        """Handle command execution."""
+        if cmd_id == "cmd-quit":
+            self.app.exit()
 
     def _generate_response(self, user_message: str) -> None:
         """Generate NPC response using local LLM."""
@@ -274,7 +665,6 @@ class NPCChat(Vertical):
             return
 
         try:
-            # Build request payload
             history = self._build_history()
             payload = {
                 "character_id": self._npc_id,
@@ -285,16 +675,13 @@ class NPCChat(Vertical):
                 "context": history,
             }
 
-            # Add verbose flag to request pipeline debug info
             if self._verbose:
                 payload["verbose"] = True
 
-            # Try local proxy first (SSE streaming)
             try:
                 await self._do_generate_streaming(payload, status, container)
                 return
             except httpx.ConnectError as e:
-                # Local proxy not available, fall back to cloud API
                 local_url = get_local_proxy_url()
                 if self._verbose:
                     if local_url:
@@ -304,14 +691,12 @@ class NPCChat(Vertical):
                 else:
                     status.update(Text("Local proxy unavailable, using cloud...", style=FG_DIM))
             except Exception as e:
-                # Other errors - show details and fall back
                 local_url = get_local_proxy_url()
                 if self._verbose:
                     status.update(Text(f"Local proxy error ({local_url}): {type(e).__name__}: {e}", style="#FF5555"))
                 else:
                     status.update(Text("Local proxy error, using cloud...", style=FG_DIM))
 
-            # Fallback to cloud API (no streaming)
             await self._do_generate_cloud(payload, status)
 
         except httpx.ConnectError:
@@ -328,15 +713,14 @@ class NPCChat(Vertical):
         import time
         client_start_time = time.time()
 
-        # Get local proxy URL from runtime.json
         local_proxy_url = get_local_proxy_url()
         if not local_proxy_url:
             raise httpx.ConnectError("Local proxy URL not found in runtime.json")
 
         # Create streaming message widget
         streaming_text = Text()
-        streaming_text.append(f"{self._npc_name}: ", style=f"bold {PINK}")
-        streaming_widget = Static(streaming_text, classes="chat-message")
+        streaming_text.append(f"{self._npc_name}: ", style=f"bold {FG}")
+        streaming_widget = Static(streaming_text, classes="chat-message npc-message")
         container.mount(streaming_widget)
 
         tokens_received = 0
@@ -356,12 +740,10 @@ class NPCChat(Vertical):
                 json=payload,
             ) as response:
                 if response.status_code != 200:
-                    # Remove streaming label and raise error
                     streaming_widget.remove()
                     err_text = await response.aread()
                     raise Exception(f"API error {response.status_code}: {err_text.decode()[:100]}")
 
-                # Parse SSE events
                 event_type = ""
                 async for line in response.aiter_lines():
                     line = line.strip()
@@ -379,20 +761,16 @@ class NPCChat(Vertical):
                             continue
 
                         if event_type == "token":
-                            # Stream token to UI
                             token = data.get("t", "")
                             if token:
                                 tokens_received += 1
                                 speech += token
-                                # Update the streaming label with new token
                                 streaming_text.append(token, style=FG)
                                 streaming_widget.update(streaming_text)
                                 container.scroll_end(animate=False)
-                                # Update status with token count
                                 status.update(Text(f"Streaming... ({tokens_received} tokens)", style=CYAN))
 
                         elif event_type == "done":
-                            # Final response received
                             final_data = data
                             speech = data.get("speech", speech)
                             verified = data.get("verified", False)
@@ -406,20 +784,26 @@ class NPCChat(Vertical):
         if speech:
             indicator = "●" if verified else "○"
             final_text = Text()
-            final_text.append(f"{self._npc_name}: ", style=f"bold {PINK}")
-            final_text.append(f"{speech} {indicator}", style=FG)
+            final_text.append(f"{self._npc_name}: ", style=f"bold {FG}")
+            final_text.append(f"{speech} ", style=FG)
+            final_text.append(indicator, style=GREEN if verified else FG_DIM)
             streaming_widget.update(final_text)
 
-            # Record message in history
             self._messages.append({"role": "assistant", "content": speech})
 
-            # Show debug info if verbose
+            # Update debug panel summary
             if self._verbose and final_data:
-                self._show_debug_info(final_data)
+                backend_latency = final_data.get("latency_ms", 0)
+                client_latency = int((time.time() - client_start_time) * 1000)
+                try:
+                    debug_panel = self.query_one(DebugPanel)
+                    debug_panel.set_summary(client_latency, backend_latency, tokens_received, verified)
+                except Exception:
+                    pass
 
             backend_latency = final_data.get("latency_ms", 0)
             client_latency = int((time.time() - client_start_time) * 1000)
-            status.update(Text(f"Done ({client_latency}ms total, {backend_latency}ms backend, {tokens_received} tokens)", style=GREEN))
+            status.update(Text(f"Done ({client_latency}ms, {tokens_received} tokens)", style=GREEN))
         else:
             streaming_widget.remove()
             status.update(Text("No response generated", style=FG_DIM))
@@ -442,11 +826,6 @@ class NPCChat(Vertical):
                 verified = data.get("verified", False)
 
                 if speech:
-                    # Show debug info if verbose mode
-                    if self._verbose:
-                        self._show_debug_info(data)
-
-                    # Add verification indicator
                     indicator = "●" if verified else "○"
                     self._add_npc_message(f"{speech} {indicator}")
                     status.update("")
@@ -465,7 +844,6 @@ class NPCChat(Vertical):
             elif response.status_code == 404:
                 status.update(Text(f"NPC '{self._npc_name}' not found", style="#FF5555"))
             else:
-                # Try to get full error details from response
                 try:
                     err_text = response.text
                     try:
@@ -473,9 +851,6 @@ class NPCChat(Vertical):
                         err_msg = str(err_data)
                     except Exception:
                         err_msg = err_text[:500] if err_text else "No response body"
-
-                    if self._verbose:
-                        self._show_api_error(response.status_code, err_msg, dict(response.headers))
                     status.update(Text(f"API error {response.status_code}: {err_msg[:100]}", style="#FF5555"))
                 except Exception as e:
                     status.update(Text(f"API error {response.status_code}: {e}", style="#FF5555"))
@@ -488,141 +863,12 @@ class NPCChat(Vertical):
         if not self._verbose or not self._visible:
             return
 
-        container = self.query_one("#npc-chat-container", VerticalScroll)
-
-        pass_num = payload.get("pass", "?")
-        name = payload.get("name", "Unknown")
-        duration = payload.get("durationMs", 0)
-        skipped = payload.get("skipped", False)
-        error = payload.get("error", False)
-        retry_of = payload.get("retryOf", 0)
-
-        text = Text()
-        retry_suffix = f" (Retry {retry_of})" if retry_of > 0 else ""
-
-        if skipped:
-            text.append(f"[Pass {pass_num}] {name}: Skipped", style=FG_DIM)
-        elif error:
-            text.append(f"[Pass {pass_num}] {name}: Error{retry_suffix}", style="#FF5555")
-            if error_msg := payload.get("errorMsg"):
-                text.append(f"\n  {error_msg}", style="#FF5555")
-        else:
-            text.append(f"[Pass {pass_num}] {name} ({duration}ms){retry_suffix}", style=CYAN)
-
-            # Query rewrite (Pass 1)
-            if query_rewrite := payload.get("queryRewrite"):
-                text.append(f"\n  Query rewrite: {query_rewrite}", style=FG_DIM)
-
-            # Sources (Pass 1)
-            if sources := payload.get("sources"):
-                text.append(f"\n  Sources ({len(sources)}):", style=FG_DIM)
-                for src in sources:
-                    score = src.get("score", 0)
-                    path = src.get("path", "")
-                    src_type = src.get("type", "")
-                    src_id = src.get("id", "?")
-                    text.append(f"\n    [{src_id}] {path} (score: {score:.2f}, {src_type})", style=FG_DIM)
-
-            # Evidence blocks (Pass 4)
-            if evidence_blocks := payload.get("evidenceBlocks"):
-                text.append(f"\n  Evidence ({len(evidence_blocks)}):", style=FG_DIM)
-                for block in evidence_blocks:
-                    block_id = block.get("id", "?")
-                    source_id = block.get("sourceId", "?")
-                    block_type = block.get("type", "")
-                    block_text = block.get("text", "")
-                    text.append(f"\n    [{block_id}] (source {source_id}, {block_type})", style=CYAN)
-                    text.append(f"\n      \"{block_text}\"", style=FG_DIM)
-
-            # Citation answer (Pass 4) - the grounded draft from LlamaIndex
-            if citation_answer := payload.get("citationAnswer"):
-                text.append(f"\n  Citation answer (grounded draft):", style=FG_DIM)
-                for line in citation_answer.split("\n"):
-                    text.append(f"\n    {line}", style=FG_DIM)
-
-            # Verdict (Pass 2.5/4.5)
-            if verdict := payload.get("verdict"):
-                if verdict == "APPROVED":
-                    faith = payload.get("faithfulness", 0)
-                    text.append(f"\n  ✓ APPROVED (faithfulness: {faith:.2f})", style=GREEN)
-                else:
-                    issues = payload.get("issues", [])
-                    text.append(f"\n  ✗ ISSUES_FOUND ({len(issues)} issue(s))", style="#FF5555")
-                    for issue in issues:
-                        claim = issue.get("claim", "")
-                        cite = issue.get("citation", "")
-                        issue_type = issue.get("type", "")
-                        severity = issue.get("severity", "")
-                        cite_str = f" [{cite}]" if cite else ""
-                        text.append(f"\n    - \"{claim}\"{cite_str}: {issue_type} ({severity})", style=FG_DIM)
-
-            # Output (Pass 2/4 - internal monologue or speech)
-            if output := payload.get("output"):
-                text.append(f"\n  Output:", style=FG_DIM)
-                for line in output.split("\n"):
-                    text.append(f"\n    {line}", style=FG_DIM)
-
-        widget = Static(text, classes="chat-message")
-        container.mount(widget)
-        container.scroll_end(animate=False)
-
-    def _show_api_error(self, status_code: int, body: str, headers: dict) -> None:
-        """Show full API error details in verbose mode."""
-        container = self.query_one("#npc-chat-container", VerticalScroll)
-
-        text = Text()
-        text.append(f"─── API ERROR {status_code} ───\n", style="#FF5555")
-        text.append(f"Body: {body}\n", style=FG_DIM)
-        text.append("Headers:\n", style=FG_DIM)
-        for key, value in headers.items():
-            text.append(f"  {key}: {value}\n", style=FG_DIM)
-        text.append("─────────────────────", style="#FF5555")
-
-        widget = Static(text, classes="chat-message")
-        container.mount(widget)
-        container.scroll_end(animate=False)
-
-    def _show_debug_info(self, data: dict) -> None:
-        """Show debug info from API response in verbose mode."""
-        container = self.query_one("#npc-chat-container", VerticalScroll)
-
-        # Build debug text
-        debug_lines = []
-
-        latency = data.get("latency_ms")
-        if latency:
-            debug_lines.append(f"latency: {latency}ms")
-
-        verified = data.get("verified")
-        if verified is not None:
-            debug_lines.append(f"verified: {verified}")
-
-        retries = data.get("retries")
-        if retries:
-            debug_lines.append(f"retries: {retries}")
-
-        thoughts = data.get("thoughts")
-        if thoughts:
-            debug_lines.append(f"thoughts: {thoughts}")
-
-        citations = data.get("citations", [])
-        if citations:
-            debug_lines.append(f"citations: {len(citations)}")
-            for cit in citations[:3]:  # Show first 3
-                claim = cit.get("claim", "")[:50]
-                verified_cit = "✓" if cit.get("verified") else "✗"
-                debug_lines.append(f"  {verified_cit} {claim}...")
-
-        if debug_lines:
-            text = Text()
-            text.append("─── debug ───\n", style=FG_DIM)
-            for line in debug_lines:
-                text.append(f"{line}\n", style=FG_DIM)
-            text.append("─────────────", style=FG_DIM)
-
-            widget = Static(text, classes="chat-message")
-            container.mount(widget)
-            container.scroll_end(animate=False)
+        # Add pass to debug panel instead of chat
+        try:
+            debug_panel = self.query_one(DebugPanel)
+            debug_panel.add_pass(payload)
+        except Exception:
+            pass
 
     def action_close_chat(self) -> None:
         """Close the chat widget."""

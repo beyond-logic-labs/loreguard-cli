@@ -96,43 +96,43 @@ class LoreguardApp(App):
         self.verbose = verbose
         self.theme = "dracula"  # Default to Dracula theme
 
-        # Configure debug logging when verbose mode is enabled
-        if verbose:
-            self._setup_debug_logging()
+        # Always suppress console logging in TUI mode to prevent glitches
+        # Only enable debug file logging when verbose mode is on
+        self._setup_logging(verbose)
 
-    def _setup_debug_logging(self) -> None:
-        """Setup debug logging to file when verbose mode is enabled."""
+    def _setup_logging(self, verbose: bool = False) -> None:
+        """Setup logging for TUI mode.
+
+        Always suppresses console output to avoid TUI glitches.
+        In verbose mode, logs to file at DEBUG level.
+        In non-verbose mode, suppresses all logging.
+        """
         import logging
         from pathlib import Path
-
-        log_file = Path.cwd() / "loreguard-debug.log"
 
         # Get root logger
         root_logger = logging.getLogger()
 
-        # Remove existing handlers
+        # Remove all existing handlers to prevent console output
         for handler in root_logger.handlers[:]:
             root_logger.removeHandler(handler)
 
-        # File handler - captures all debug output
-        file_handler = logging.FileHandler(log_file, mode='w')
-        file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            datefmt="%H:%M:%S",
-        ))
-
-        # Console handler - only warnings (don't mess up TUI)
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.WARNING)
-        console_handler.setFormatter(logging.Formatter("%(message)s"))
-
-        root_logger.addHandler(file_handler)
-        root_logger.addHandler(console_handler)
-        root_logger.setLevel(logging.DEBUG)
-
-        # Store log file path for reference
-        self._log_file = log_file
+        if verbose:
+            # In verbose mode, log to file only (no console)
+            log_file = Path.cwd() / "loreguard-debug.log"
+            file_handler = logging.FileHandler(log_file, mode='w')
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                datefmt="%H:%M:%S",
+            ))
+            root_logger.addHandler(file_handler)
+            root_logger.setLevel(logging.DEBUG)
+            self._log_file = log_file
+        else:
+            # In non-verbose mode, suppress all logging to avoid TUI glitches
+            root_logger.addHandler(logging.NullHandler())
+            root_logger.setLevel(logging.CRITICAL + 1)  # Suppress everything
 
     def on_mount(self) -> None:
         """Handle mount event - push the main screen."""

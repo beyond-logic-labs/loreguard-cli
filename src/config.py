@@ -48,6 +48,7 @@ class LoreguardConfig:
     adapter_path: str = ""  # Optional LoRA adapter path
     dev_mode: bool = False
     context_size: int = 16384  # llama-server context window size (configurable per game)
+    max_speech_tokens: int = 50  # Max tokens for NPC speech output (Pass 4). Default: 50 (~40 words)
 
     def save(self) -> None:
         """Save configuration to disk."""
@@ -69,6 +70,7 @@ class LoreguardConfig:
                     adapter_path=data.get("adapter_path", ""),
                     dev_mode=data.get("dev_mode", False),
                     context_size=data.get("context_size", 16384),
+                    max_speech_tokens=data.get("max_speech_tokens", 50),
                 )
             except (json.JSONDecodeError, KeyError):
                 pass

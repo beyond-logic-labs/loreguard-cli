@@ -76,6 +76,7 @@ class StatusPanel(Vertical):
 
         # Format based on level
         prefix = ""
+        msg_color = "#9090A0"  # Gray for log messages
         if level == "error":
             prefix = f"[{RED}]ERROR:[/] "
         elif level == "warning":
@@ -83,9 +84,9 @@ class StatusPanel(Vertical):
         elif level == "success":
             prefix = f"[{GREEN}]OK:[/] "
         elif level == "info":
-            prefix = f"[{CYAN}]INFO:[/] "
+            prefix = f"[{CYAN}]→[/] "
 
-        log_widget.write(f"{prefix}{message}")
+        log_widget.write(f"{prefix}[{msg_color}]{message}[/]")
 
     def clear_log(self) -> None:
         """Clear the activity log."""

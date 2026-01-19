@@ -263,6 +263,7 @@ class NPCChat:
         )
         self.current_npc: Optional[NPCCharacter] = None
         self.history: list[ChatMessage] = []
+        self.current_context: str = ""  # Situational context (where NPC is, what they're doing)
         self.use_color = supports_color()
         self.verbose = verbose
         self.tunnel = tunnel
@@ -346,10 +347,40 @@ class NPCChat:
                     cite = issue.get("citation", "")
                     issue_type = issue.get("type", "")
                     severity = issue.get("severity", "")
+                    claim_type = issue.get("claimType", "")  # LLM-classified claim type
                     cite_str = f" [{cite}]" if cite else ""
-                    print(f"    {c(Colors.MUTED)}- \"{claim}\"{cite_str}: {issue_type} ({severity}){c(Colors.RESET)}")
+                    type_info = f" [{claim_type}]" if claim_type else ""
+                    print(f"    {c(Colors.MUTED)}- \"{claim}\"{cite_str}: {issue_type} ({severity}){type_info}{c(Colors.RESET)}")
                 if retry_of == 0:  # About to retry
                     print(f"  {c(Colors.YELLOW)}→ Retrying...{c(Colors.RESET)}")
+
+        # Fail-closed info (Pass 4.5) - shows when content was stripped or deflection generated
+        if fail_closed := payload.get("failClosed"):
+            reason = fail_closed.get("reason", "UNKNOWN")
+            claims_stripped = fail_closed.get("claimsStripped", [])
+            original_len = fail_closed.get("originalLen", 0)
+            final_len = fail_closed.get("finalLen", 0)
+            print(f"  {c(Colors.YELLOW)}⚠ FAIL-CLOSED: {reason}{c(Colors.RESET)}")
+            print(f"    {c(Colors.MUTED)}Stripped {len(claims_stripped)} claims ({original_len} → {final_len} chars){c(Colors.RESET)}")
+            for claim in claims_stripped[:3]:  # Limit to 3
+                claim_display = claim[:80] + "..." if len(claim) > 80 else claim
+                print(f"    {c(Colors.MUTED)}• {claim_display}{c(Colors.RESET)}")
+
+        # Pass 5: Actions executed (async) - shows write, send_message, etc.
+        if actions := payload.get("actions"):
+            print(f"  {c(Colors.LABEL)}Actions executed ({len(actions)}):{c(Colors.RESET)}")
+            for action in actions:
+                action_name = action.get("name", "unknown")
+                params = action.get("parameters", {})
+                param_str = ", ".join(f"{k}={v[:30]}..." if len(str(v)) > 30 else f"{k}={v}" for k, v in params.items())
+                if param_str:
+                    print(f"    {c(Colors.BRIGHT_GREEN)}✓{c(Colors.RESET)} {action_name}({param_str})")
+                else:
+                    print(f"    {c(Colors.BRIGHT_GREEN)}✓{c(Colors.RESET)} {action_name}()")
+
+        # Pass 6: Memory generation output (async)
+        if memory_output := payload.get("memoryOutput"):
+            print(f"  {c(Colors.LABEL)}Memory:{c(Colors.RESET)} {memory_output}")
 
         # Output (Pass 2/4 - show internal monologue or speech)
         if output := payload.get("output"):
@@ -459,6 +490,7 @@ class NPCChat:
                     print(f"{c(Colors.MUTED)}Available commands:{c(Colors.RESET)}")
                     print(f"  {c(Colors.CYAN)}/switch{c(Colors.RESET)}  - Switch to another NPC")
                     print(f"  {c(Colors.CYAN)}/list{c(Colors.RESET)}    - List all available NPCs")
+                    print(f"  {c(Colors.CYAN)}/context{c(Colors.RESET)} - Set situational context (where NPC is, what they're doing)")
                     print(f"  {c(Colors.CYAN)}/debug{c(Colors.RESET)}   - Show details of last response")
                     print(f"  {c(Colors.CYAN)}/clear{c(Colors.RESET)}   - Clear conversation history")
                     print(f"  {c(Colors.CYAN)}/quit{c(Colors.RESET)}    - Exit chat")
@@ -485,6 +517,24 @@ class NPCChat:
                 if cmd == "/clear":
                     self.history = []
                     print(f"{c(Colors.MUTED)}Conversation history cleared.{c(Colors.RESET)}")
+                    print()
+                    continue
+
+                if cmd.startswith("/context"):
+                    # /context or /context <text>
+                    parts = user_input.split(" ", 1)
+                    if len(parts) > 1:
+                        self.current_context = parts[1].strip()
+                        print(f"{c(Colors.MUTED)}Context set: {self.current_context}{c(Colors.RESET)}")
+                    elif self.current_context:
+                        print(f"{c(Colors.MUTED)}Current context: {self.current_context}{c(Colors.RESET)}")
+                        print(f"{c(Colors.MUTED)}Use /context <text> to change or /context clear to remove{c(Colors.RESET)}")
+                    else:
+                        print(f"{c(Colors.MUTED)}No context set. Use /context <text> to set situational context.{c(Colors.RESET)}")
+                        print(f"{c(Colors.MUTED)}Example: /context Chatting via mIRC from work{c(Colors.RESET)}")
+                    if len(parts) > 1 and parts[1].strip().lower() == "clear":
+                        self.current_context = ""
+                        print(f"{c(Colors.MUTED)}Context cleared.{c(Colors.RESET)}")
                     print()
                     continue
 
@@ -524,6 +574,7 @@ class NPCChat:
                     character_id=npc.id,
                     message=user_input,
                     history=self.history,
+                    context=self.current_context,
                     verbose=self.verbose,
                 )
                 last_response = response

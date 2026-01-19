@@ -297,6 +297,7 @@ class EmbeddedHTTPServer:
             character_id = body.get("character_id", body.get("characterId", ""))
             current_context = body.get("current_context", body.get("currentContext", ""))
             enable_thinking = body.get("enable_thinking", body.get("enableThinking", False))
+            max_speech_tokens = body.get("max_speech_tokens", body.get("maxSpeechTokens", 0))
             accept = request.headers.get("accept", "")
             streaming = "text/event-stream" in accept
 
@@ -320,6 +321,7 @@ class EmbeddedHTTPServer:
                             enable_thinking=enable_thinking,
                             verbose=body.get("verbose", False),
                             api_token=api_token,
+                            max_speech_tokens=max_speech_tokens,
                         )
                     )
                     # Wait for the result
@@ -340,6 +342,7 @@ class EmbeddedHTTPServer:
                     enable_thinking=enable_thinking,
                     verbose=body.get("verbose", False),
                     api_token=api_token,
+                    max_speech_tokens=max_speech_tokens,
                 )
 
             if streaming:
@@ -385,12 +388,13 @@ class EmbeddedHTTPServer:
             self._bound_socket.close()
             self._bound_socket = None
 
-            # Create uvicorn config
+            # Create uvicorn config (disable all logging to avoid TUI glitches)
             config = uvicorn.Config(
                 app=app,
                 host=self.host,
                 port=self.actual_port,
-                log_level="warning",
+                log_level="critical",  # Suppress all logs
+                access_log=False,  # Disable access logging
             )
 
             # Signal ready before starting to serve

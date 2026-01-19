@@ -262,8 +262,9 @@ class LLMProxy:
         # Note: JSON mode is not compatible with streaming in llama.cpp
         # If force_json is requested, fall back to non-streaming
         if req.force_json:
-            logger.warning("JSON mode not supported with streaming, falling back to non-streaming")
+            logger.info("=== JSON MODE: falling back to non-streaming with response_format=json_object ===")
             result = await self._generate_llamacpp(req)
+            logger.info(f"=== JSON MODE: raw result = {result.get('content', '')[:200]} ===")
             if result.get("error"):
                 yield {"type": "error", "error": result["error"]}
             else:
@@ -565,25 +566,21 @@ class LLMProxy:
             payload["enable_thinking"] = False
 
         # Force JSON output if requested
+        # NOTE: llama.cpp's json_schema mode is broken (issue #10732), use json_object instead
+        # The schema is not enforced but at least valid JSON is produced
         if req.force_json:
+            logger.info(f"=== JSON MODE: Setting response_format=json_object ===")
             # Merge system prompt into user message for "Content-only" template
             if len(req.messages) >= 2 and req.messages[0].get("role") == "system":
                 system_content = req.messages[0]["content"]
                 user_content = req.messages[-1]["content"]
                 merged = f"INSTRUCTIONS:\n{system_content}\n\nREQUEST:\n{user_content}"
                 payload["messages"] = [{"role": "user", "content": merged}]
+                logger.info(f"=== JSON MODE: Merged system into user message ===")
 
-            if req.json_schema:
-                payload["response_format"] = {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "response",
-                        "strict": True,
-                        "schema": req.json_schema,
-                    }
-                }
-            else:
-                payload["response_format"] = {"type": "json_object"}
+            # Always use json_object - json_schema type is broken in llama.cpp server
+            payload["response_format"] = {"type": "json_object"}
+            logger.info(f"=== JSON MODE: payload has response_format = {payload.get('response_format')} ===")
 
         # Use per-request timeout if specified
         timeout = req.timeout or self.default_timeout

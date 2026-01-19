@@ -10,8 +10,8 @@ RED = "#FF5555"
 ORANGE = "#FFB86C"
 FG = "#F8F8F2"
 FG_DIM = "#6272A4"
-BG = "#282A36"
-BG_DARK = "#1E1F29"
+BG = "#1E1F29"
+BG_DARK = "#16171F"
 SELECTED_BG = "#44475A"
 
 # CSS for the entire application
@@ -109,6 +109,17 @@ Input:focus {{
     border: solid {PURPLE};
 }}
 
+/* Palette input - no border */
+#palette-filter {{
+    border: hidden;
+    background: transparent;
+}}
+
+#palette-filter:focus {{
+    border: hidden;
+    background: transparent;
+}}
+
 /* ListView styling */
 ListView {{
     background: transparent;
@@ -121,20 +132,24 @@ ListView > ListItem {{
 }}
 
 ListView > ListItem.-selected {{
-    background: {PURPLE};
+    background: #7C3AED;
     color: {FG};
-    text-style: bold;
+}}
+
+ListView > ListItem.--highlight {{
+    background: #7C3AED;
+    color: {FG};
 }}
 
 /* Footer */
-Footer, LoreguardFooter {{
+Footer {{
     background: {BG_DARK};
     color: {FG_DIM};
     height: 2;
     margin-top: 1;
 }}
 
-Footer .footer--key, LoreguardFooter .footer--key {{
+Footer .footer--key {{
     color: {CYAN};
 }}
 

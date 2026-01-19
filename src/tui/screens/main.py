@@ -73,8 +73,7 @@ class MainScreen(Screen):
 
     MainScreen LoreguardBanner {
         width: 100%;
-        height: 11;
-        content-align: center top;
+        height: 6;
     }
 
     MainScreen HardwareInfo {
@@ -97,12 +96,19 @@ class MainScreen(Screen):
     MainScreen NPCChat {
         width: 100%;
         height: 1fr;
-        margin: 0 2;
+        margin: 0 1;
+    }
+
+    MainScreen.chat-open NPCChat {
+        margin: 0;
     }
 
     MainScreen.chat-open #main-content {
-        height: auto;
-        max-height: 3;
+        display: none;
+    }
+
+    MainScreen.chat-open #activity-log {
+        display: none;
     }
 
     MainScreen ServerMonitor {
@@ -116,9 +122,10 @@ class MainScreen(Screen):
         height: 1fr;
         min-height: 8;
         max-height: 12;
-        border: solid $surface-lighten-2;
-        padding: 0 1;
-        margin: 0 2;
+        border: none;
+        background: transparent;
+        padding: 0 2;
+        margin: 0;
     }
     """
 
@@ -638,6 +645,7 @@ class MainScreen(Screen):
             return
 
         # Color based on level
+        msg_color = "#9090A0"  # Gray for log messages
         if level == "error":
             prefix = "[red]ERROR:[/] "
         elif level == "warning" or level == "warn":
@@ -647,7 +655,7 @@ class MainScreen(Screen):
         else:
             prefix = "[cyan]→[/] "
 
-        log_widget.write(f"{prefix}{message}")
+        log_widget.write(f"{prefix}[{msg_color}]{message}[/]")
 
     def _update_connection_status(self, status: str) -> None:
         """Update the connection status indicator."""
@@ -759,13 +767,16 @@ class MainScreen(Screen):
                 if response.status_code == 200:
                     characters = response.json()
 
-                    if not characters:
+                    # Filter to only show NPCs (exclude worlds)
+                    npcs = [c for c in characters if c.get("type") != "world"]
+
+                    if not npcs:
                         self._update_status("No NPCs registered. Create NPCs at loreguard.com first.")
                         return
 
                     # Create NPC items
                     npc_items = []
-                    for char in characters:
+                    for char in npcs:
                         npc_items.append(PaletteItem(
                             id=f"npc-{char['id']}",
                             title=char["name"],
@@ -782,7 +793,7 @@ class MainScreen(Screen):
                             if category == "npc":
                                 npc_id = value.replace("npc-", "")
                                 # Find the character data
-                                char_data = next((c for c in characters if c["id"] == npc_id), None)
+                                char_data = next((c for c in npcs if c["id"] == npc_id), None)
                                 if char_data:
                                     self._start_npc_chat(npc_id, char_data["name"])
 
@@ -808,9 +819,9 @@ class MainScreen(Screen):
         try:
             chat = self.query_one(NPCChat)
             chat.set_npc(npc_id, npc_name, app.api_token, app.verbose)
-            chat.toggle()
-        except Exception:
-            pass
+            chat.show()  # Always show (not toggle)
+        except Exception as e:
+            self._log(f"Failed to start chat: {e}", "error")
 
     def _switch_model(self) -> None:
         """Switch to a different model."""

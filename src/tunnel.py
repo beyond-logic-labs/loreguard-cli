@@ -552,15 +552,29 @@ class BackendTunnel:
 
         try:
             # Convert stream request payload to LLM request format
-            # ADR-0014: Use warmupContext for KV cache sharing if provided
-            # warmupContext contains static NPC content (personality, memory, etc.)
+            # ADR-0014: Use cognitiveContext for KV cache sharing if provided
+            # cognitiveContext contains static NPC content (personality, memory, voice, etc.)
             # that is identical across all pipeline passes, enabling llama-server
             # to cache and reuse the KV prefix.
-            warmup_context = payload.get("warmupContext") or payload.get("systemPrompt", "")
+            # Note: Backend sends "cognitiveContext" (messages.go), falls back to "systemPrompt"
+            cognitive_context = payload.get("cognitiveContext") or payload.get("systemPrompt", "")
+
+            # Debug: Log cognitive context presence and voice tag
+            if cognitive_context:
+                has_voice = "<voice>" in cognitive_context
+                logger.info(f"[LLM Stream] cognitiveContext received ({len(cognitive_context)} chars, has_voice={has_voice})")
+                if has_voice:
+                    # Extract and log voice content for debugging
+                    import re
+                    voice_match = re.search(r'<voice>(.*?)</voice>', cognitive_context, re.DOTALL)
+                    if voice_match:
+                        logger.info(f"[LLM Stream] Voice rules: {voice_match.group(1)[:100]}")
+            else:
+                logger.warning("[LLM Stream] No cognitiveContext received - style/voice will not be applied!")
 
             llm_request = {
                 "messages": [
-                    {"role": "system", "content": warmup_context},
+                    {"role": "system", "content": cognitive_context},
                     {"role": "user", "content": payload.get("userMessage", "")},
                 ],
                 "max_tokens": payload.get("maxTokens", 512),
@@ -1003,6 +1017,7 @@ class BackendTunnel:
         enable_thinking: bool = False,
         verbose: bool = False,
         api_token: str = "",
+        max_speech_tokens: int = 0,
     ) -> asyncio.Queue[dict[str, Any]]:
         """Send a chat request to the backend and return a queue for responses.
 
@@ -1026,23 +1041,28 @@ class BackendTunnel:
         self._pending_chat_requests[request_id] = queue
 
         # Send chat_request to backend
+        payload = {
+            "requestId": request_id,
+            "characterId": character_id,
+            "message": message,
+            "playerHandle": player_handle,
+            "currentContext": current_context,
+            "history": history or [],
+            "enableThinking": enable_thinking,
+            "verbose": verbose,
+            "stream": True,  # Always streaming for SSE
+            "apiToken": api_token,  # For backend to authorize character access
+        }
+        # Only include maxSpeechTokens if explicitly set (non-zero)
+        if max_speech_tokens > 0:
+            payload["maxSpeechTokens"] = max_speech_tokens
+
         await self._send({
             "id": self._generate_message_id(),
             "type": "chat_request",
             "timestamp": self._iso_timestamp(),
             "senderId": self.worker_id,
-            "payload": {
-                "requestId": request_id,
-                "characterId": character_id,
-                "message": message,
-                "playerHandle": player_handle,
-                "currentContext": current_context,
-                "history": history or [],
-                "enableThinking": enable_thinking,
-                "verbose": verbose,
-                "stream": True,  # Always streaming for SSE
-                "apiToken": api_token,  # For backend to authorize character access
-            },
+            "payload": payload,
         })
 
         self._log(f"Chat request sent: {request_id[:8]}... (character: {character_id})", "info")
@@ -1121,15 +1141,16 @@ class BackendTunnel:
         # Build messages array
         messages = []
 
-        # ADR-0014: Use warmupContext for KV cache sharing if provided
-        # warmupContext contains static NPC content that is identical across passes
-        warmup_context = payload.get("warmupContext") or payload.get("systemPrompt", "")
+        # ADR-0014: Use cognitiveContext for KV cache sharing if provided
+        # cognitiveContext contains static NPC content (personality, memory, voice, etc.)
+        # Note: Backend sends "cognitiveContext" (messages.go), falls back to "systemPrompt"
+        cognitive_context = payload.get("cognitiveContext") or payload.get("systemPrompt", "")
 
-        # Add system prompt (warmupContext takes priority)
-        if warmup_context:
+        # Add system prompt (cognitiveContext takes priority)
+        if cognitive_context:
             messages.append({
                 "role": "system",
-                "content": warmup_context,
+                "content": cognitive_context,
             })
 
         # Add conversation history
@@ -1156,6 +1177,7 @@ class BackendTunnel:
 
         # Pass through JSON output settings (ADR-0012: grammar-constrained JSON)
         if payload.get("forceJsonOutput"):
+            logger.info(f"Intent request has forceJsonOutput=True, jsonSchema={'yes' if payload.get('jsonSchema') else 'no'}")
             request["force_json"] = True
             if payload.get("jsonSchema"):
                 request["json_schema"] = payload["jsonSchema"]
