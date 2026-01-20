@@ -572,11 +572,29 @@ class BackendTunnel:
             else:
                 logger.warning("[LLM Stream] No cognitiveContext received - style/voice will not be applied!")
 
+            # Build messages array with conversation history
+            messages = []
+
+            # Add system message (cognitive context)
+            if cognitive_context:
+                messages.append({"role": "system", "content": cognitive_context})
+
+            # Add conversation history (player/NPC previous exchanges)
+            # This is sent by the backend in worker_llm_client.go
+            conversation_history = payload.get("conversationHistory", [])
+            for entry in conversation_history:
+                messages.append({
+                    "role": entry.get("role", "user"),
+                    "content": entry.get("content", ""),
+                })
+
+            # Add current user message (pass instructions + dynamic content)
+            user_message = payload.get("userMessage", "")
+            if user_message:
+                messages.append({"role": "user", "content": user_message})
+
             llm_request = {
-                "messages": [
-                    {"role": "system", "content": cognitive_context},
-                    {"role": "user", "content": payload.get("userMessage", "")},
-                ],
+                "messages": messages,
                 "max_tokens": payload.get("maxTokens", 512),
                 "temperature": payload.get("temperature", 0.7),
                 "timeout": payload.get("timeoutMs", 120000) / 1000,  # Convert to seconds
