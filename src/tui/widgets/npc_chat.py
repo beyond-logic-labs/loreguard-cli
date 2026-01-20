@@ -304,6 +304,7 @@ class NPCChat(Vertical):
     BINDINGS = [
         Binding("escape", "close_chat", "Close", show=False),
         Binding("ctrl+d", "toggle_debug", "Toggle Debug", show=False),
+        Binding("ctrl+e", "switch_scenario", "Switch Scenario", show=False),
     ]
 
     DEFAULT_CSS = f"""
@@ -412,6 +413,9 @@ class NPCChat(Vertical):
         self._generating = False
         self._visible = False
         self._debug_visible = False
+        # Scenario support
+        self._scenarios: list[dict] = []  # [{id, name, isDefault}, ...]
+        self._scenario_id: str | None = None
 
     def compose(self) -> ComposeResult:
         """Compose the chat widget with optional debug panel."""
@@ -434,10 +438,16 @@ class NPCChat(Vertical):
         return text
 
     def _render_header(self) -> Text:
-        """Render header with NPC name."""
+        """Render header with NPC name and current scenario."""
         text = Text()
         text.append(f"Chat with ", style=FG_DIM)
         text.append(f"{self._npc_name}", style=f"bold {FG}")
+        # Show current scenario if set
+        if self._scenario_id and self._scenarios:
+            scenario = next((s for s in self._scenarios if s.get("id") == self._scenario_id), None)
+            if scenario:
+                text.append(f"  ", style=FG_DIM)
+                text.append(f"[{scenario.get('name', self._scenario_id)}]", style=CYAN)
         return text
 
     def _render_footer(self) -> Text:
@@ -448,6 +458,9 @@ class NPCChat(Vertical):
         text.append("   ")
         text.append(" esc ", style=f"bold {FG} on #44475A")
         text.append(" close", style=FG_DIM)
+        text.append("   ")
+        text.append(" ^E ", style=f"bold {FG} on #44475A")
+        text.append(" scenario", style=FG_DIM)
         text.append("   ")
         text.append(" ^D ", style=f"bold {FG} on #44475A")
         text.append(" debug", style=FG_DIM)
@@ -506,6 +519,9 @@ class NPCChat(Vertical):
         self._api_token = api_token
         self._verbose = verbose
         self._messages = []
+        # Reset scenarios
+        self._scenarios = []
+        self._scenario_id = None
 
         # Update header
         header = self.query_one(".chat-header", Static)
@@ -534,10 +550,97 @@ class NPCChat(Vertical):
         except Exception:
             pass
 
+        # Fetch scenarios for this NPC
+        self.run_worker(self._fetch_scenarios())
+
     @property
     def is_visible(self) -> bool:
         """Check if chat is visible."""
         return self._visible
+
+    async def _fetch_scenarios(self) -> None:
+        """Fetch available scenarios for the current NPC."""
+        if not self._npc_id or not self._api_token:
+            return
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"{LOREGUARD_API_URL}/api/engine/characters/scenarios/{self._npc_id}",
+                    headers={"Authorization": f"Bearer {self._api_token}"},
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    self._scenarios = data.get("scenarios", [])
+                    # Set default scenario if available
+                    default = next((s for s in self._scenarios if s.get("isDefault")), None)
+                    if default:
+                        self._scenario_id = default.get("id")
+                    elif self._scenarios:
+                        self._scenario_id = self._scenarios[0].get("id")
+                    # Update header to show scenario
+                    header = self.query_one(".chat-header", Static)
+                    header.update(self._render_header())
+        except Exception:
+            # Scenarios are optional, don't fail if not available
+            pass
+
+    def action_switch_scenario(self) -> None:
+        """Open scenario selection palette."""
+        if not self._visible:
+            return
+
+        if not self._scenarios:
+            # Show message that no scenarios are available
+            try:
+                status = self.query_one("#npc-status-line", Static)
+                status.update(Text("No scenarios available for this NPC", style=FG_DIM))
+            except Exception:
+                pass
+            return
+
+        from ..modals.unified_palette import UnifiedPaletteModal, PaletteItem
+
+        # Build scenario items
+        items = []
+        for scenario in self._scenarios:
+            scenario_id = scenario.get("id", "")
+            name = scenario.get("name", scenario_id)
+            is_current = scenario_id == self._scenario_id
+            is_default = scenario.get("isDefault", False)
+
+            desc = ""
+            if is_current:
+                desc = "current"
+            elif is_default:
+                desc = "default"
+
+            items.append(PaletteItem(
+                id=f"scenario-{scenario_id}",
+                title=name,
+                description=desc,
+                category="scenario",
+                data=scenario_id,
+            ))
+
+        def handle_result(result: tuple | None) -> None:
+            if result and result[0] == "scenario":
+                self._scenario_id = result[1]
+                # Update header
+                header = self.query_one(".chat-header", Static)
+                header.update(self._render_header())
+                # Focus input
+                self.query_one("#npc-chat-input", Input).focus()
+
+        self.app.push_screen(
+            UnifiedPaletteModal(
+                title="Select Scenario",
+                items=items,
+                show_models=False,
+                show_commands=False,
+            ),
+            handle_result,
+        )
 
     def _add_message(self, role: str, content: str) -> None:
         """Add a message to the chat display."""
@@ -606,15 +709,24 @@ class NPCChat(Vertical):
         self._submit_message(event.input)
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        """Handle input changes - specifically for / key to open palette."""
-        if event.input.value == "/":
-            if self._visible and event.input.id == "npc-chat-input":
+        """Handle input changes - / opens palette, /scenario switches scenario."""
+        if self._visible and event.input.id == "npc-chat-input":
+            value = event.input.value.lower()
+            if value == "/":
                 self._open_palette()
+            elif value == "/scenario":
+                event.input.clear()
+                self.action_switch_scenario()
 
     def on_key(self, event) -> None:
-        """Handle key events - capture Ctrl+D for debug toggle."""
-        if event.key == "ctrl+d" and self._visible:
+        """Handle key events - capture Ctrl+D for debug toggle, Ctrl+E for scenario."""
+        key = event.key
+        if key in ("ctrl+d", "ctrl_d") and self._visible:
             self.action_toggle_debug()
+            event.prevent_default()
+            event.stop()
+        elif key in ("ctrl+e", "ctrl_e") and self._visible:
+            self.action_switch_scenario()
             event.prevent_default()
             event.stop()
 
@@ -645,6 +757,8 @@ class NPCChat(Vertical):
         """Handle command execution."""
         if cmd_id == "cmd-quit":
             self.app.exit()
+        elif cmd_id == "cmd-scenario":
+            self.action_switch_scenario()
 
     def _generate_response(self, user_message: str) -> None:
         """Generate NPC response using local LLM."""
@@ -674,6 +788,10 @@ class NPCChat(Vertical):
                 "history": history,
                 "context": history,
             }
+
+            # Add scenario if selected
+            if self._scenario_id:
+                payload["scenario_id"] = self._scenario_id
 
             if self._verbose:
                 payload["verbose"] = True
