@@ -24,6 +24,7 @@ from .llm import LLMProxy
 if TYPE_CHECKING:
     from .nli import NLIService
     from .intent_classifier import IntentClassifier
+    from .dialogue_act_classifier import DialogueActClassifier
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -57,6 +58,7 @@ class BackendTunnel:
         model_id: str = "default",
         nli_service: Optional["NLIService"] = None,
         intent_classifier: Optional["IntentClassifier"] = None,
+        dialogue_act_classifier: Optional["DialogueActClassifier"] = None,
         log_callback: Callable[[str, str], None] | None = None,
         max_retries: int = -1,  # -1 = infinite retries, 0 = no retries (single try)
     ):
@@ -67,6 +69,7 @@ class BackendTunnel:
         self.model_id = model_id
         self.nli_service = nli_service
         self.intent_classifier = intent_classifier  # ADR-0010: Intent classification
+        self.dialogue_act_classifier = dialogue_act_classifier  # Dialogue act classification for fillers
         self.log_callback = log_callback
         self.max_retries = max_retries
 
@@ -247,6 +250,9 @@ class BackendTunnel:
         if self.intent_classifier is not None and self.intent_classifier.is_loaded:
             capabilities.append("intent")
             self._log("Intent classification capability enabled (ADR-0010)", "info")
+        if self.dialogue_act_classifier is not None and self.dialogue_act_classifier.is_loaded:
+            capabilities.append("dialogue_act")
+            self._log("Dialogue act capability enabled", "info")
 
         # Build registration message
         register_msg = {
@@ -399,6 +405,10 @@ class BackendTunnel:
             # Backend wants us to classify user intent (ADR-0010)
             await self._handle_intent_classify_request(data)
 
+        elif msg_type == "dialogue_act_classify_request":
+            # Backend wants us to classify dialogue act
+            await self._handle_dialogue_act_classify_request(data)
+
         elif msg_type == "nli_request":
             # Backend wants us to run NLI verification
             await self._handle_nli_request(data)
@@ -449,6 +459,10 @@ class BackendTunnel:
         elif msg_type == "chat_stream_done":
             # Chat response complete from backend (local proxy architecture)
             await self._handle_chat_stream_done(data)
+
+        elif msg_type == "filler_message":
+            # Immediate filler message for chat request
+            await self._handle_filler_message(data)
 
         elif msg_type == "slot_save_request":
             # ADR-0014: Backend wants us to save KV cache to disk
@@ -885,6 +899,99 @@ class BackendTunnel:
                 },
             })
 
+    async def _handle_dialogue_act_classify_request(self, data: dict):
+        """Handle a dialogue act classification request from the backend."""
+        payload = data.get("payload", {})
+        request_id = payload.get("requestId")
+        trace_id = data.get("traceId", "")
+
+        if not request_id:
+            self._log("Dialogue act request missing requestId", "error")
+            return
+
+        if not self.dialogue_act_classifier:
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "dialogue_act_classify_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
+                    "errorMessage": "Dialogue act classifier not available",
+                },
+            })
+            return
+
+        query = payload.get("query", "")
+        timeout_ms = payload.get("timeoutMs", 5000)
+        timeout_s = timeout_ms / 1000.0
+
+        self._log(f"Dialogue act request {request_id[:8]}...", "info")
+        start_time = time.time()
+
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(self.dialogue_act_classifier.classify, query),
+                timeout=timeout_s
+            )
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "dialogue_act_classify_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": True,
+                    "dialogueAct": result.dialogue_act,
+                    "confidence": result.confidence,
+                    "latencyMs": latency_ms,
+                },
+            })
+            self._log(f"Dialogue act response: {result.dialogue_act} ({latency_ms}ms)", "success")
+
+        except asyncio.TimeoutError:
+            latency_ms = int((time.time() - start_time) * 1000)
+            self._log(f"Dialogue act timeout after {latency_ms}ms (limit: {timeout_ms}ms)", "warning")
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "dialogue_act_classify_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
+                    "errorMessage": f"Classification timeout ({timeout_ms}ms)",
+                },
+            })
+
+        except Exception as e:
+            logger.exception("Dialogue act classification error")
+            self._log(f"Dialogue act error: {e}", "error")
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "dialogue_act_classify_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
+                    "errorMessage": str(e),
+                },
+            })
+
     async def _handle_nli_request(self, data: dict):
         """Handle an NLI verification request from the backend."""
         payload = data.get("payload", {})
@@ -1170,6 +1277,28 @@ class BackendTunnel:
             f"(verified: {payload.get('verified', False)})",
             "success" if payload.get("verified") else "warn",
         )
+
+    async def _handle_filler_message(self, data: dict):
+        """Handle a filler_message from the backend."""
+        payload = data.get("payload", {})
+        request_id = payload.get("requestId")
+
+        if not request_id:
+            logger.warning("filler_message missing requestId")
+            return
+
+        queue = self._pending_chat_requests.get(request_id)
+        if not queue:
+            logger.debug(f"No pending chat request for filler {request_id[:8]}...")
+            return
+
+        await queue.put({
+            "type": "filler",
+            "data": {
+                "text": payload.get("text", ""),
+                "dialogueAct": payload.get("dialogueAct", ""),
+            },
+        })
 
     def _intent_to_llm_request(self, payload: dict) -> dict:
         """Convert backend IntentRequest to LLM request format."""

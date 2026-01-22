@@ -189,6 +189,8 @@ class EmbeddedHTTPServer:
                 msg_type = msg.get("type")
                 if msg_type == "token":
                     yield f"event: token\ndata: {json.dumps({'t': msg.get('token', '')})}\n\n"
+                elif msg_type == "filler":
+                    yield f"event: filler\ndata: {json.dumps(msg.get('data', {}))}\n\n"
                 elif msg_type == "done":
                     yield f"event: done\ndata: {json.dumps(msg.get('data', {}))}\n\n"
                     break
@@ -234,6 +236,8 @@ class EmbeddedHTTPServer:
                         "verified": data.get("verified", False),
                         "citations": data.get("citations", []),
                     }
+                elif msg_type == "filler":
+                    continue
                 elif msg_type == "error":
                     return {"error": msg.get("error", "Unknown error")}
         finally:
