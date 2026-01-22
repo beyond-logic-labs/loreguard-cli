@@ -271,6 +271,7 @@ class UnifiedPaletteModal(ModalScreen[tuple[str, Any] | None]):
         if self._show_commands:
             self._all_items.extend([
                 PaletteItem("cmd-chat", "Chat with NPC", "", "command", "ctrl+n"),
+                PaletteItem("cmd-scenario", "Switch Scenario", "", "command", "ctrl+e"),
                 PaletteItem("cmd-switch-model", "Switch Model", "", "command", "ctrl+l"),
                 PaletteItem("cmd-theme", "Change Theme", "", "command", "ctrl+t"),
                 PaletteItem("cmd-change-token", "Change Token", "", "command"),
@@ -301,18 +302,12 @@ class UnifiedPaletteModal(ModalScreen[tuple[str, Any] | None]):
             except Exception:
                 all_models = list(SUPPORTED_MODELS)
 
-            # Sort: most recent first (pipeline-v3 before vanilla), then by size descending
+            # Sort: most recent first, then by size descending
             def model_sort_key(m):
-                # Pipeline models first, then vanilla, then others
-                name_lower = m.name.lower()
-                if "pipeline" in name_lower:
-                    priority = 0
-                elif "vanilla" in name_lower:
-                    priority = 1
-                else:
-                    priority = 2
-                # Within same priority, larger models first (descending)
-                return (priority, -m.size_gb)
+                # Primary: sort by recency (days_ago), None goes last
+                days = m.days_ago if m.days_ago is not None else 9999
+                # Secondary: larger models first (descending)
+                return (days, -m.size_gb)
 
             all_models.sort(key=model_sort_key)
 
@@ -621,6 +616,9 @@ class UnifiedPaletteModal(ModalScreen[tuple[str, Any] | None]):
 
         elif item.category == "npc":
             self.dismiss(("npc", item.id))
+
+        elif item.category == "scenario":
+            self.dismiss(("scenario", item.data))
 
         else:
             self.dismiss(("action", item.id))

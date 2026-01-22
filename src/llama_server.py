@@ -22,12 +22,12 @@ from typing import AsyncGenerator, Callable, Optional
 
 import httpx
 
-LLAMA_VERSION = "b7662"  # Must match loreguard-engine bundle version
+LLAMA_VERSION = "b7789"  # Must match loreguard-engine bundle version
 
 # Download URLs for each platform
 BINARIES = {
     "windows": {
-        "url": f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_VERSION}/llama-{LLAMA_VERSION}-bin-win-cuda-cu12.4-x64.zip",
+        "url": f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_VERSION}/llama-{LLAMA_VERSION}-bin-win-cuda-12.4-x64.zip",
         "archive_type": "zip",
         "binary_name": "llama-server.exe",
     },
@@ -37,8 +37,8 @@ BINARIES = {
         "binary_name": "llama-server",
     },
     "macos": {
-        "url": f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_VERSION}/llama-{LLAMA_VERSION}-bin-macos-arm64.zip",
-        "archive_type": "zip",
+        "url": f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_VERSION}/llama-{LLAMA_VERSION}-bin-macos-arm64.tar.gz",
+        "archive_type": "tar.gz",
         "binary_name": "llama-server",
     },
 }
@@ -112,10 +112,56 @@ def get_llama_server_path() -> Path:
     return get_bin_dir() / binary_name
 
 
+def get_version_file_path() -> Path:
+    """Get the path to the version marker file."""
+    return get_bin_dir() / ".llama_version"
+
+
+def get_installed_version() -> Optional[str]:
+    """Get the currently installed llama-server version, or None if not installed."""
+    version_file = get_version_file_path()
+    if version_file.exists():
+        try:
+            return version_file.read_text().strip()
+        except OSError:
+            return None
+    return None
+
+
 def is_llama_server_installed() -> bool:
-    """Check if llama-server is installed."""
+    """Check if llama-server is installed with the correct version."""
     server_path = get_llama_server_path()
-    return server_path.exists() and server_path.is_file()
+    if not (server_path.exists() and server_path.is_file()):
+        return False
+
+    # Check version matches
+    installed_version = get_installed_version()
+    if installed_version != LLAMA_VERSION:
+        # Version mismatch - need to re-download
+        return False
+
+    return True
+
+
+def cleanup_old_llama_server() -> Optional[str]:
+    """Remove old llama-server installation if version mismatch detected.
+
+    Returns the old version string if cleanup was performed, None otherwise.
+    """
+    installed_version = get_installed_version()
+    if installed_version is None:
+        return None
+
+    if installed_version == LLAMA_VERSION:
+        return None
+
+    # Version mismatch - clean up old installation
+    bin_dir = get_bin_dir()
+    if bin_dir.exists():
+        shutil.rmtree(bin_dir)
+        bin_dir.mkdir(parents=True, exist_ok=True)
+
+    return installed_version
 
 
 async def download_file(
@@ -208,7 +254,12 @@ async def download_llama_server(
         if progress_callback:
             progress_callback(msg, progress)
 
-    notify(f"Downloading llama-server for {plat}...")
+    # Clean up old version if upgrading
+    old_version = cleanup_old_llama_server()
+    if old_version:
+        notify(f"Upgrading llama-server from {old_version} to {LLAMA_VERSION}...")
+    else:
+        notify(f"Downloading llama-server {LLAMA_VERSION} for {plat}...")
 
     # Download to temp file
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -275,7 +326,11 @@ async def download_llama_server(
             if lib.is_file() and not lib.is_symlink():
                 make_executable(lib)
 
-        notify("llama-server installed successfully!")
+        # Write version marker file for future version checks
+        version_file = get_version_file_path()
+        version_file.write_text(LLAMA_VERSION)
+
+        notify(f"llama-server {LLAMA_VERSION} installed successfully!")
 
     return get_llama_server_path()
 
@@ -316,12 +371,18 @@ class LlamaServerProcess:
             "-ngl", "99",   # GPU layers (use all)
             # ADR-0014: Enable slot save/restore for disk-based KV cache persistence
             # This allows saving warmup context to disk and restoring across messages
+            "--slots",  # Enable /slots API endpoint (required for save/restore)
             "--slot-save-path", str(get_slot_cache_dir()),
             # ADR-0014: Force single slot when slot caching is enabled
             # This minimizes VRAM usage and ensures slot 0 pinning works correctly.
             # Without this, llama-server may allocate multiple slots, each consuming
             # KV cache memory proportional to context_size * model_hidden_dim.
             "-np", "1",
+            # Use custom Jinja template without tool-calling logic.
+            # Llama 3.1's built-in template forces tool-calling format even without tools,
+            # so we use a stripped-down template that only handles chat messages.
+            "--jinja",
+            "--chat-template-file", str(Path(__file__).parent.parent / "templates" / "llama31-no-tools.jinja"),
         ]
 
         # Add LoRA adapter if specified

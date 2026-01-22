@@ -474,6 +474,10 @@ class BackendTunnel:
         self._log(f"Intent request {request_id[:8]}...", "info")
         start_time = time.time()
 
+        # Log key request parameters for debugging
+        force_json = payload.get("forceJsonOutput", False)
+        logger.debug(f"Intent request {request_id[:8]}: forceJson={force_json}")
+
         try:
             # Convert intent request to LLM request format
             llm_request = self._intent_to_llm_request(payload)
@@ -550,6 +554,12 @@ class BackendTunnel:
         self._log(f"LLM stream request {request_id[:8]}...", "info")
         start_time = time.time()
 
+        # Log key payload fields for debugging streaming issues
+        force_json = payload.get("forceJsonOutput", False)
+        max_tokens = payload.get("maxTokens", 512)
+        has_schema = bool(payload.get("jsonSchema"))
+        logger.debug(f"Stream request {request_id[:8]}: forceJson={force_json}, schema={has_schema}, maxTokens={max_tokens}")
+
         try:
             # Convert stream request payload to LLM request format
             # ADR-0014: Use cognitiveContext for KV cache sharing if provided
@@ -611,6 +621,8 @@ class BackendTunnel:
             if payload.get("disableThinking"):
                 llm_request["disable_thinking"] = True
 
+            logger.debug(f"LLM request config: force_json={llm_request.get('force_json', False)}, max_tokens={llm_request.get('max_tokens')}")
+
             # Stream tokens from LLM
             token_count = 0
             content_parts = []
@@ -619,6 +631,7 @@ class BackendTunnel:
 
             # Diagnostic: track inter-token timing to identify stalls
             last_token_time = time.time()
+            first_token_time = None
 
             async for chunk in self.llm_proxy.generate_streaming(llm_request):
                 chunk_type = chunk.get("type")
@@ -628,6 +641,11 @@ class BackendTunnel:
                     if token:
                         content_parts.append(token)
                         token_count += 1
+
+                        # Track time to first token
+                        if token_count == 1:
+                            first_token_time = time.time()
+                            logger.debug(f"[Stream {request_id[:8]}] First token received")
 
                         # Diagnostic: check for slow token generation
                         now = time.time()
@@ -668,6 +686,8 @@ class BackendTunnel:
                     final_content = chunk.get("content", "".join(content_parts))
 
                     latency_ms = int((time.time() - start_time) * 1000)
+
+                    logger.debug(f"[Stream {request_id[:8]}] Sending llm_stream_complete: {token_count} tokens, {len(final_content)} chars")
 
                     # Send completion message
                     await self._send({

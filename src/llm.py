@@ -262,9 +262,8 @@ class LLMProxy:
         # Note: JSON mode is not compatible with streaming in llama.cpp
         # If force_json is requested, fall back to non-streaming
         if req.force_json:
-            logger.info("=== JSON MODE: falling back to non-streaming with response_format=json_object ===")
+            logger.debug(f"JSON MODE: force_json=True, schema={bool(req.json_schema)}")
             result = await self._generate_llamacpp(req)
-            logger.info(f"=== JSON MODE: raw result = {result.get('content', '')[:200]} ===")
             if result.get("error"):
                 yield {"type": "error", "error": result["error"]}
             else:
@@ -289,28 +288,31 @@ class LLMProxy:
         accumulated_content = []
         token_index = 0
         usage = {}
+        line_count = 0  # Track SSE lines for debugging
 
         try:
             # Use a custom timeout for streaming:
             # - connect: 10 seconds (fail fast if server unreachable)
-            # - read: 5 seconds (max time between tokens - detects stalled stream)
+            # - read: 60 seconds (max time between tokens - detects stalled stream)
             # - write: 30 seconds (sending the request)
             # - pool: 10 seconds (getting a connection from pool)
             #
-            # Note: 5s between tokens is generous. If generating, tokens flow
-            # continuously. A 5s gap means llama-server crashed or hung.
+            # Note: 60s between tokens allows for complex reasoning pauses
+            # while still detecting genuinely stalled streams.
             stream_timeout = httpx.Timeout(
                 connect=10.0,
-                read=5.0,  # Max 5s between tokens (detects stalled stream fast)
+                read=60.0,  # Max 60s between tokens (allows complex reasoning pauses)
                 write=30.0,
                 pool=10.0,
             )
+            logger.info(f"STREAMING: Sending POST with stream=True, max_tokens={payload.get('max_tokens')}")
             async with self.client.stream(
                 "POST",
                 f"{self.endpoint}/v1/chat/completions",
                 json=payload,
                 timeout=stream_timeout,
             ) as response:
+                logger.info(f"STREAMING: Got response status={response.status_code}")
                 if response.status_code != 200:
                     error_text = await response.aread()
                     error_text = error_text.decode()[:500]
@@ -319,7 +321,11 @@ class LLMProxy:
                     return
 
                 # Parse SSE stream
+                logger.info("STREAMING: Starting to read SSE lines")
                 async for line in response.aiter_lines():
+                    line_count += 1
+                    if line_count == 1:
+                        logger.info(f"STREAMING: First line received: {line[:100] if line else '(empty)'}")
                     if not line:
                         continue
 
@@ -367,11 +373,11 @@ class LLMProxy:
                     if finish_reason:
                         break
 
-        except httpx.TimeoutException:
-            # Timeout between tokens (5s) - LLM likely hung
+        except httpx.TimeoutException as e:
+            # Timeout between tokens (60s) - LLM likely hung or response not streaming
             partial_content = "".join(accumulated_content)
-            logger.warning(f"LLM streaming timed out after {token_index} tokens ({len(partial_content)} chars)")
-            yield {"type": "error", "error": f"LLM streaming timed out after {token_index} tokens (no token for 5s)"}
+            logger.warning(f"STREAMING TIMEOUT: {token_index} tokens, {len(partial_content)} chars, lines_read={line_count}, exception={e}")
+            yield {"type": "error", "error": f"LLM streaming timed out after {token_index} tokens (no token for 60s)"}
             return
 
         # Process final content
@@ -566,24 +572,29 @@ class LLMProxy:
             payload["enable_thinking"] = False
 
         # Force JSON output if requested
-        # NOTE: llama.cpp's json_schema mode is broken (issue #10732), use json_object instead
-        # The schema is not enforced but at least valid JSON is produced
+        # Use json_object type with schema field - this is supported in llama.cpp server
+        # (server-common.cpp extracts schema from response_format.schema for json_object type)
+        # Note: json_schema type has a bug (issue #10732, PR #18963 pending)
         if req.force_json:
-            logger.info(f"=== JSON MODE: Setting response_format=json_object ===")
             # Merge system prompt into user message for "Content-only" template
             if len(req.messages) >= 2 and req.messages[0].get("role") == "system":
                 system_content = req.messages[0]["content"]
                 user_content = req.messages[-1]["content"]
                 merged = f"INSTRUCTIONS:\n{system_content}\n\nREQUEST:\n{user_content}"
                 payload["messages"] = [{"role": "user", "content": merged}]
-                logger.info(f"=== JSON MODE: Merged system into user message ===")
+                logger.debug("JSON MODE: Merged system into user message")
 
-            # Always use json_object - json_schema type is broken in llama.cpp server
-            payload["response_format"] = {"type": "json_object"}
-            logger.info(f"=== JSON MODE: payload has response_format = {payload.get('response_format')} ===")
+            # Use json_object with schema for proper constraint enforcement
+            if req.json_schema:
+                payload["response_format"] = {"type": "json_object", "schema": req.json_schema}
+                logger.info(f"JSON MODE: response_format=json_object with schema")
+            else:
+                payload["response_format"] = {"type": "json_object"}
+                logger.info(f"JSON MODE: response_format=json_object (no schema)")
 
         # Use per-request timeout if specified
         timeout = req.timeout or self.default_timeout
+
         response = await self.client.post(
             f"{self.endpoint}/v1/chat/completions",
             json=payload,

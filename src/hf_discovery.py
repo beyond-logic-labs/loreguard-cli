@@ -38,6 +38,11 @@ def _parse_days_ago(iso_date: Optional[str]) -> Optional[int]:
 CACHE_FILE = Path.home() / ".cache" / "loreguard" / "hf_models_cache.json"
 CACHE_TTL_HOURS = 24  # Refresh cache every 24 hours
 
+# Additional repos to include beyond loreguard-* pattern
+ADDITIONAL_REPOS = [
+    "Llama-3.1-8B-Instruct-GGUF",
+]
+
 
 @dataclass
 class GGUFFile:
@@ -219,12 +224,14 @@ def fetch_org_repos(org: str = HF_ORG) -> list[str]:
         logger.warning("HF Discovery: Failed to fetch org repos: %s", e)
         return []
 
-    # Filter for loreguard-* repos (will check for GGUF files later)
+    # Filter for loreguard-* repos plus any additional whitelisted repos
     repos = []
     for repo in data:
         repo_id = repo.get("id", "")
-        # Include any loreguard-* repo - we'll filter by GGUF files in fetch_hf_repo_files
-        if repo_id.startswith(f"{org}/loreguard-"):
+        repo_name = repo_id.split("/")[-1] if "/" in repo_id else repo_id
+
+        # Include loreguard-* repos or explicitly whitelisted repos
+        if repo_id.startswith(f"{org}/loreguard-") or repo_name in ADDITIONAL_REPOS:
             repos.append(repo_id)
 
     return repos

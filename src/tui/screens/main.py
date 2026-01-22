@@ -544,9 +544,24 @@ class MainScreen(Screen):
             model_id = _resolve_backend_model_id(app.model_path.stem) if app.model_path else "unknown"
 
             def log_callback(msg: str, lvl: str) -> None:
-                # Always show errors and warnings
+                # Always show errors and warnings in status bar
                 if lvl in ("error", "warn"):
                     self._update_status(msg)
+
+                # Log important messages to the activity log
+                # Filter out noisy/internal messages to keep the log readable
+                should_log = (
+                    lvl in ("error", "warn", "success") or  # Always log errors, warnings, successes
+                    "Slot saved" in msg or  # Slot save result
+                    "Slot restored" in msg or  # Slot restore result
+                    "Slot restore: cold start" in msg or  # Cache miss (useful info)
+                    "Chat request sent" in msg or  # Chat request received from backend
+                    "Connection" in msg or  # Connection status changes
+                    "Registered" in msg or  # Worker registration
+                    "Reconnecting" in msg  # Reconnection attempts
+                )
+                if should_log:
+                    self._log(msg, lvl)
 
                 # Update connection status based on messages
                 if "Registered as worker" in msg:
