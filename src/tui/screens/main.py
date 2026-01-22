@@ -491,6 +491,12 @@ class MainScreen(Screen):
         from ...llm import LLMProxy
         from ...nli import NLIService
         from ...intent_classifier import IntentClassifier
+        from ...dialogue_act_classifier import (
+            DialogueActClassifier,
+            is_dialogue_act_model_available,
+            download_dialogue_act_model,
+            get_dialogue_act_model_info,
+        )
         from ...wizard import suppress_external_output
 
         app: "LoreguardApp" = self.app  # type: ignore
@@ -537,6 +543,41 @@ class MainScreen(Screen):
             except Exception as e:
                 self._log(f"Intent classifier error: {e}", "error")
                 intent_classifier = None
+
+            # Load dialogue act classifier (filler selection) - run in thread pool
+            self._update_status("Loading dialogue act model...", log=False)
+            self._log("Loading dialogue act classifier...")
+            dialogue_act_classifier = None
+            try:
+                if is_dialogue_act_model_available():
+                    dialogue_act_classifier = DialogueActClassifier()
+                    loop = asyncio.get_event_loop()
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        with suppress_external_output():
+                            model_loaded = await loop.run_in_executor(pool, dialogue_act_classifier.load_model)
+                    if model_loaded:
+                        self._log(f"Dialogue act classifier ready ({dialogue_act_classifier.device})", "success")
+                    else:
+                        self._log("Dialogue act classifier failed to load", "warning")
+                        dialogue_act_classifier = None
+                else:
+                    info = get_dialogue_act_model_info()
+                    self._log(
+                        f"Dialogue act model not found. Downloading in background (~{info['size_mb']}MB)...",
+                        "info",
+                    )
+
+                    async def _download_dialogue_act():
+                        ok = await asyncio.to_thread(download_dialogue_act_model)
+                        if ok:
+                            self._log("Dialogue act model downloaded. Restart to enable.", "success")
+                        else:
+                            self._log("Dialogue act model download failed.", "warning")
+
+                    asyncio.create_task(_download_dialogue_act())
+            except Exception as e:
+                self._log(f"Dialogue act classifier error: {e}", "error")
+                dialogue_act_classifier = None
 
             self._update_status("Connecting to backend...", log=False)
             self._log("Connecting to Loreguard backend...")
@@ -585,6 +626,7 @@ class MainScreen(Screen):
                 model_id=model_id,
                 nli_service=nli_service,
                 intent_classifier=intent_classifier,
+                dialogue_act_classifier=dialogue_act_classifier,
                 log_callback=log_callback,
                 max_retries=0,  # Single try, no retries
             )

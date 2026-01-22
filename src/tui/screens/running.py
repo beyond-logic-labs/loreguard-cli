@@ -47,6 +47,7 @@ class RunningScreen(Screen):
             Static("", id="status-backend"),
             Static("", id="status-nli"),
             Static("", id="status-intent"),
+            Static("", id="status-dialogue_act"),
             Static("", id="status-mode"),
             Static("", classes="spacer"),
             Static("", id="status-requests"),
@@ -191,6 +192,12 @@ class RunningScreen(Screen):
                 from ...llm import LLMProxy
                 from ...nli import NLIService
                 from ...intent_classifier import IntentClassifier
+                from ...dialogue_act_classifier import (
+                    DialogueActClassifier,
+                    is_dialogue_act_model_available,
+                    download_dialogue_act_model,
+                    get_dialogue_act_model_info,
+                )
 
                 llm_proxy = LLMProxy("http://127.0.0.1:8080")
 
@@ -238,6 +245,45 @@ class RunningScreen(Screen):
                     self._log(f"Intent classifier error: {e}", "error")
                     intent_classifier = None
 
+                # Load Dialogue Act Classifier
+                dialogue_act_classifier = None
+                self._update_status("dialogue_act", "Dialogue Act", "Loading...", "info")
+                self._log("Loading Dialogue Act classifier...", "info")
+                try:
+                    if is_dialogue_act_model_available():
+                        dialogue_act_classifier = DialogueActClassifier()
+                        loop = asyncio.get_event_loop()
+                        with concurrent.futures.ThreadPoolExecutor() as pool:
+                            with suppress_external_output():
+                                dialog_loaded = await loop.run_in_executor(pool, dialogue_act_classifier.load_model)
+                        if dialog_loaded:
+                            self._update_status("dialogue_act", "Dialogue Act", f"Ready ({dialogue_act_classifier.device})", "success")
+                            self._log(f"Dialogue act classifier ready on {dialogue_act_classifier.device}", "success")
+                        else:
+                            self._update_status("dialogue_act", "Dialogue Act", "Failed", "warning")
+                            self._log("Dialogue act classifier failed to load", "warning")
+                            dialogue_act_classifier = None
+                    else:
+                        info = get_dialogue_act_model_info()
+                        self._update_status("dialogue_act", "Dialogue Act", "Downloading (bg)", "info")
+                        self._log(
+                            f"Dialogue act model not found. Downloading in background (~{info['size_mb']}MB)...",
+                            "info",
+                        )
+
+                        async def _download_dialogue_act():
+                            ok = await asyncio.to_thread(download_dialogue_act_model)
+                            if ok:
+                                self._log("Dialogue act model downloaded. Restart to enable.", "success")
+                            else:
+                                self._log("Dialogue act model download failed.", "warning")
+
+                        asyncio.create_task(_download_dialogue_act())
+                except Exception as e:
+                    self._update_status("dialogue_act", "Dialogue Act", f"Error: {e}", "warning")
+                    self._log(f"Dialogue act classifier error: {e}", "error")
+                    dialogue_act_classifier = None
+
                 # Get model ID for backend
                 model_id = app.model_path.stem
 
@@ -249,6 +295,7 @@ class RunningScreen(Screen):
                     model_id=model_id,
                     nli_service=nli_service,
                     intent_classifier=intent_classifier,
+                    dialogue_act_classifier=dialogue_act_classifier,
                     log_callback=self._log,
                 )
                 self._tunnel.on_request_complete = self._on_request_complete

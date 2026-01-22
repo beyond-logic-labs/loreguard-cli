@@ -1436,6 +1436,50 @@ async def step_start(
                     status.log(f"Intent error: {e}", "error")
                     intent_classifier = None
 
+            # Initialize dialogue act classifier (filler selection)
+            dialogue_act_classifier = None
+            if intent_enabled:
+                status.set_line("dialogue_act", "Dialogue Act", "Loading...")
+                try:
+                    from .dialogue_act_classifier import (
+                        DialogueActClassifier,
+                        is_dialogue_act_model_available,
+                        download_dialogue_act_model,
+                        get_dialogue_act_model_info,
+                    )
+                    if is_dialogue_act_model_available():
+                        dialogue_act_classifier = DialogueActClassifier()
+                        loop = asyncio.get_event_loop()
+                        with concurrent.futures.ThreadPoolExecutor() as pool:
+                            with suppress_external_output():
+                                model_loaded = await loop.run_in_executor(pool, dialogue_act_classifier.load_model)
+                        if model_loaded:
+                            status.set_line("dialogue_act", "Dialogue Act", f"✓ Ready ({dialogue_act_classifier.device})")
+                        else:
+                            status.set_line("dialogue_act", "Dialogue Act", "✗ Failed to load")
+                            status.log("Dialogue act model failed to load - continuing without", "warn")
+                            dialogue_act_classifier = None
+                    else:
+                        info = get_dialogue_act_model_info()
+                        status.set_line("dialogue_act", "Dialogue Act", "↓ Downloading (bg)")
+                        status.log(
+                            f"Dialogue act model not found. Downloading in background (~{info['size_mb']}MB)...",
+                            "info",
+                        )
+
+                        async def _download_dialogue_act():
+                            ok = await asyncio.to_thread(download_dialogue_act_model)
+                            if ok:
+                                status.log("Dialogue act model downloaded. Restart to enable.", "success")
+                            else:
+                                status.log("Dialogue act model download failed.", "warn")
+
+                        asyncio.create_task(_download_dialogue_act())
+                except Exception as e:
+                    status.set_line("dialogue_act", "Dialogue Act", f"✗ Error: {e}")
+                    status.log(f"Dialogue act error: {e}", "error")
+                    dialogue_act_classifier = None
+
             model_id = _resolve_backend_model_id(model_path.stem)
             tunnel = BackendTunnel(
                 backend_url="wss://api.loreguard.com/workers",
@@ -1445,6 +1489,7 @@ async def step_start(
                 model_id=model_id,
                 nli_service=nli_service,
                 intent_classifier=intent_classifier,
+                dialogue_act_classifier=dialogue_act_classifier,
                 log_callback=status.log,
             )
             asyncio.create_task(tunnel.connect())

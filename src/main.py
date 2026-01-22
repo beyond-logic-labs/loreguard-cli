@@ -34,6 +34,12 @@ from .llm import LLMProxy
 from .config import get_config_value
 from .nli import NLIService, is_nli_model_available
 from .intent_classifier import IntentClassifier, is_intent_model_available
+from .dialogue_act_classifier import (
+    DialogueActClassifier,
+    is_dialogue_act_model_available,
+    download_dialogue_act_model,
+    get_dialogue_act_model_info,
+)
 
 load_dotenv()
 
@@ -56,12 +62,13 @@ tunnel: BackendTunnel | None = None
 llm_proxy: LLMProxy | None = None
 nli_service: NLIService | None = None
 intent_classifier: IntentClassifier | None = None
+dialogue_act_classifier: DialogueActClassifier | None = None
 
 
 @app.on_event("startup")
 async def startup():
     """Initialize connections on startup."""
-    global tunnel, llm_proxy, nli_service, intent_classifier
+    global tunnel, llm_proxy, nli_service, intent_classifier, dialogue_act_classifier
 
     # Note: runtime.json is written by run() before hypercorn starts
     # (socket is already bound at that point)
@@ -108,6 +115,36 @@ async def startup():
     else:
         console.print("[yellow]Intent classifier disabled (set LOREGUARD_INTENT_ENABLED=true to enable)[/yellow]")
 
+    # Initialize dialogue act classifier (optional, for filler selection)
+    enable_dialogue_act = os.getenv("LOREGUARD_DIALOGUE_ACT_ENABLED", "true").lower() == "true"
+    if enable_dialogue_act:
+        console.print("[cyan]Initializing dialogue act classifier...[/cyan]")
+        if is_dialogue_act_model_available():
+            dialogue_act_classifier = DialogueActClassifier()
+            if dialogue_act_classifier.load_model():
+                console.print(f"[green]Dialogue act classifier ready (device: {dialogue_act_classifier.device})[/green]")
+            else:
+                console.print("[yellow]Warning: Dialogue act model failed to load[/yellow]")
+                console.print("[yellow]  Dialogue act classification will be disabled[/yellow]")
+                dialogue_act_classifier = None
+        else:
+            info = get_dialogue_act_model_info()
+            console.print(
+                f"[yellow]Dialogue act model not found. Downloading in background (~{info['size_mb']}MB)...[/yellow]"
+            )
+
+            async def _download_dialogue_act():
+                ok = await asyncio.to_thread(download_dialogue_act_model)
+                if ok:
+                    console.print("[green]Dialogue act model downloaded. Restart to enable.[/green]")
+                else:
+                    console.print("[yellow]Dialogue act model download failed (see logs).[/yellow]")
+
+            asyncio.create_task(_download_dialogue_act())
+            dialogue_act_classifier = None
+    else:
+        console.print("[yellow]Dialogue act classifier disabled (set LOREGUARD_DIALOGUE_ACT_ENABLED=true to enable)[/yellow]")
+
     # Connect to remote backend
     backend_url = get_config_value("BACKEND_URL", "wss://api.lorekeeper.ai/workers")
     worker_id = get_config_value("WORKER_ID", "")
@@ -121,6 +158,7 @@ async def startup():
             backend_url, llm_proxy, worker_id, worker_token, model_id,
             nli_service=nli_service,
             intent_classifier=intent_classifier,
+            dialogue_act_classifier=dialogue_act_classifier,
         )
         asyncio.create_task(tunnel.connect())
     elif backend_url:
@@ -159,6 +197,7 @@ async def health():
         "llm_available": llm_available,
         "backend_connected": tunnel.connected if tunnel else False,
         "nli_available": nli_service.is_loaded if nli_service else False,
+        "dialogue_act_available": dialogue_act_classifier.is_loaded if dialogue_act_classifier else False,
     }
 
 
@@ -203,6 +242,9 @@ async def chat(request: Request, body: ChatRequest):
         event: token
         data: {"t": "Hello"}
 
+        event: filler
+        data: {"text": "Let me think...", "dialogueAct": "Wh-Question"}
+
         event: done
         data: {"speech": "Hello, traveler...", "verified": true, ...}
 
@@ -223,16 +265,16 @@ async def chat(request: Request, body: ChatRequest):
     request_id = str(uuid.uuid4())
 
     # Send chat request and get response queue
-        response_queue = await tunnel.send_chat_request(
-            request_id=request_id,
-            character_id=body.character_id,
-            message=body.message,
-            player_handle=body.player_handle,
-            current_context=body.current_context,
-            history=body.history,
-            enable_thinking=body.enable_thinking,
-            verbose=body.verbose,
-        )
+    response_queue = await tunnel.send_chat_request(
+        request_id=request_id,
+        character_id=body.character_id,
+        message=body.message,
+        player_handle=body.player_handle,
+        current_context=body.current_context,
+        history=body.history,
+        enable_thinking=body.enable_thinking,
+        verbose=body.verbose,
+    )
 
     if streaming:
         # Stream tokens as SSE
@@ -271,6 +313,9 @@ async def _stream_chat_response(request_id: str, queue: asyncio.Queue):
             if msg_type == "token":
                 yield f"event: token\ndata: {json.dumps({'t': msg.get('token', '')})}\n\n"
 
+            elif msg_type == "filler":
+                yield f"event: filler\ndata: {json.dumps(msg.get('data', {}))}\n\n"
+
             elif msg_type == "done":
                 yield f"event: done\ndata: {json.dumps(msg.get('data', {}))}\n\n"
                 break
@@ -306,6 +351,9 @@ async def _wait_for_chat_response(request_id: str, queue: asyncio.Queue) -> dict
 
             if msg_type == "token":
                 tokens.append(msg.get("token", ""))
+
+            elif msg_type == "filler":
+                continue
 
             elif msg_type == "done":
                 data = msg.get("data", {})
