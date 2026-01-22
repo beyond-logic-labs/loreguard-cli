@@ -63,7 +63,7 @@ class NLISetupScreen(Screen):
             return
 
         # Need to download
-        status.update(Text("Downloading NLI model (~1.4GB)...", style=f"{CYAN}"))
+        status.update(Text("Downloading NLI model (~0.6GB)...", style=f"{CYAN}"))
         progress.display = True
         progress.update(total=100, progress=0)
 

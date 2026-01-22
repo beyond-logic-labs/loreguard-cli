@@ -1,7 +1,7 @@
-"""NLI (Natural Language Inference) service for fact verification.
+"""NLI/grounding service for fact verification.
 
 This module provides entailment verification for the NPC dialogue pipeline.
-It uses a RoBERTa model trained on NLI datasets for fact-checking.
+It supports both traditional NLI models and HHEM-style grounding models.
 
 This is the client-side implementation that runs locally on the user's machine,
 providing fast inference (50-100ms vs 1500ms on Fargate).
@@ -10,6 +10,7 @@ providing fast inference (50-100ms vs 1500ms on Fargate).
 import logging
 from dataclasses import dataclass
 from enum import Enum
+import os
 from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -32,22 +33,24 @@ class NLIResult:
     prob_contradiction: float = 0.0
 
 
-# Default model for NLI verification
-# Using ANLI-trained model for better robustness
-DEFAULT_NLI_MODEL = "ynie/roberta-large-snli_mnli_fever_anli_R1_R2_R3-nli"
+# Default model for verification (HHEM grounding)
+DEFAULT_NLI_MODEL = "vectara/hallucination_evaluation_model"
+
+# HHEM grounding threshold (entailed if score >= threshold)
+DEFAULT_HHEM_THRESHOLD = 0.6
 
 
 class NLIService:
     """Service for NLI-based entailment verification.
 
-    Uses a RoBERTa model to classify the relationship between
+    Uses an NLI or grounding model to classify the relationship between
     evidence (premise) and claim (hypothesis) as:
     - ENTAILMENT: Evidence supports the claim
     - NEUTRAL: Evidence neither supports nor contradicts
     - CONTRADICTION: Evidence contradicts the claim
     """
 
-    def __init__(self, model_path: Optional[str] = None):
+    def __init__(self, model_path: Optional[str] = None, hhem_threshold: Optional[float] = None):
         """Initialize the NLI service.
 
         Args:
@@ -56,6 +59,8 @@ class NLIService:
         self._model = None
         self._tokenizer = None
         self._model_path = model_path or DEFAULT_NLI_MODEL
+        self._use_hhem = self._is_hhem_model(self._model_path)
+        self._hhem_threshold = hhem_threshold or float(os.getenv("NLI_HHEM_THRESHOLD", DEFAULT_HHEM_THRESHOLD))
         self._device = None
         self._max_length = 512
         self._label_order = None
@@ -77,6 +82,11 @@ class NLIService:
         except ImportError:
             return "cpu"
 
+    def _is_hhem_model(self, model_name: str) -> bool:
+        """Detect if the selected model is an HHEM-style grounding scorer."""
+        name = model_name.lower()
+        return "hallucination_evaluation_model" in name or "hhem" in name
+
     def load_model(self) -> bool:
         """Load the NLI model and tokenizer.
 
@@ -93,6 +103,21 @@ class NLIService:
             self._device = self._resolve_device()
             logger.info(f"Loading NLI model: {self._model_path} (device={self._device})")
 
+            if self._use_hhem:
+                self._model = AutoModelForSequenceClassification.from_pretrained(
+                    self._model_path,
+                    trust_remote_code=True,
+                )
+                self._model.to(self._device)
+                self._model.eval()
+
+                if not hasattr(self._model, "predict"):
+                    raise RuntimeError("HHEM model missing predict() helper")
+
+                self._label_order = ["entailment", "neutral"]
+                logger.info("HHEM model loaded successfully")
+                return True
+
             self._tokenizer = AutoTokenizer.from_pretrained(self._model_path)
             self._model = AutoModelForSequenceClassification.from_pretrained(self._model_path)
             self._model.to(self._device)
@@ -106,10 +131,12 @@ class NLIService:
             self._label_order = []
             for i in range(len(id2label)):
                 label = id2label[i].lower()
-                if "entail" in label:
+                if "entail" in label or "support" in label or "ground" in label:
                     self._label_order.append("entailment")
-                elif "contra" in label:
+                elif "contra" in label or "refute" in label:
                     self._label_order.append("contradiction")
+                elif "neutral" in label or "unknown" in label:
+                    self._label_order.append("neutral")
                 else:
                     self._label_order.append("neutral")
 
@@ -135,6 +162,18 @@ class NLIService:
                 raise RuntimeError("NLI model not loaded")
 
         import torch
+
+        if self._use_hhem:
+            scores = self._predict_hhem([(evidence, claim)])
+            score = scores[0]
+            entailment = EntailmentLabel.ENTAILED if score >= self._hhem_threshold else EntailmentLabel.NEUTRAL
+            return NLIResult(
+                entailment=entailment,
+                confidence=score,
+                prob_entailment=score,
+                prob_neutral=1.0 - score,
+                prob_contradiction=0.0,
+            )
 
         # Tokenize with proper sentence-pair format
         inputs = self._tokenizer(
@@ -199,6 +238,20 @@ class NLIService:
 
         import torch
 
+        if self._use_hhem:
+            scores = self._predict_hhem([(evidence, claim) for claim, evidence in claims_evidence])
+            results = []
+            for score in scores:
+                entailment = EntailmentLabel.ENTAILED if score >= self._hhem_threshold else EntailmentLabel.NEUTRAL
+                results.append(NLIResult(
+                    entailment=entailment,
+                    confidence=score,
+                    prob_entailment=score,
+                    prob_neutral=1.0 - score,
+                    prob_contradiction=0.0,
+                ))
+            return results
+
         # Prepare batch inputs - evidence (premise) first!
         premises = [evidence for claim, evidence in claims_evidence]
         hypotheses = [claim for claim, evidence in claims_evidence]
@@ -246,6 +299,18 @@ class NLIService:
 
         return results
 
+    def _predict_hhem(self, pairs: List[Tuple[str, str]]) -> List[float]:
+        """Run HHEM prediction and normalize output to list of floats."""
+        import torch
+        scores = self._model.predict(pairs)
+        if isinstance(scores, torch.Tensor):
+            scores = scores.detach().cpu().tolist()
+        elif hasattr(scores, "tolist"):
+            scores = scores.tolist()
+        if isinstance(scores, float):
+            return [scores]
+        return [float(s) for s in scores]
+
     @property
     def is_loaded(self) -> bool:
         """Check if the model is loaded."""
@@ -261,7 +326,7 @@ def is_nli_model_available() -> bool:
     """Check if the NLI model is available in HuggingFace cache.
 
     The transformers library caches models in ~/.cache/huggingface/hub/.
-    This function checks if the RoBERTa NLI model has been downloaded.
+    This function checks if the configured NLI/HHEM model has been downloaded.
     """
     try:
         from huggingface_hub import try_to_load_from_cache
@@ -335,9 +400,9 @@ def get_nli_model_info() -> dict:
         Dict with model info: name, url, size_mb
     """
     return {
-        "name": "RoBERTa-large-ANLI",
+        "name": "HHEM Grounding Model",
         "model_id": DEFAULT_NLI_MODEL,
         "url": f"https://huggingface.co/{DEFAULT_NLI_MODEL}",
-        "size_mb": 1400,  # Approximate size
-        "description": "ANLI-trained model for citation verification",
+        "size_mb": 600,  # Approximate size
+        "description": "Grounding model for citation verification (HHEM)",
     }

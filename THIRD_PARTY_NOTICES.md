@@ -16,27 +16,14 @@ locally in standard directories (`~/.cache/huggingface/` for transformer models,
 These models are downloaded automatically when using citation verification and
 intent classification features.
 
-### RoBERTa-large-ANLI (Citation Verification)
+### HHEM-2.1-Open (Citation Verification)
 
-- **Model ID**: `ynie/roberta-large-snli_mnli_fever_anli_R1_R2_R3-nli`
-- **Source**: https://huggingface.co/ynie/roberta-large-snli_mnli_fever_anli_R1_R2_R3-nli
-- **License**: MIT
-- **Author**: Yixin Nie
-- **Size**: ~1.4 GB
-- **Purpose**: Natural Language Inference for verifying NPC claims against knowledge base
-
-**Citation** (for academic use):
-```bibtex
-@inproceedings{nie-etal-2020-adversarial,
-    title = "Adversarial {NLI}: A New Benchmark for Natural Language Understanding",
-    author = "Nie, Yixin and Williams, Adina and Dinan, Emily and
-              Bansal, Mohit and Weston, Jason and Kiela, Douwe",
-    booktitle = "Proceedings of the 58th Annual Meeting of the Association
-                 for Computational Linguistics",
-    year = "2020",
-    publisher = "Association for Computational Linguistics",
-}
-```
+- **Model ID**: `vectara/hallucination_evaluation_model`
+- **Source**: https://huggingface.co/vectara/hallucination_evaluation_model
+- **License**: Apache 2.0
+- **Author**: Vectara
+- **Size**: ~0.6 GB
+- **Purpose**: Hallucination evaluation / grounding for verifying NPC claims against knowledge base
 
 ### DeBERTa-v3-large-zeroshot (Intent Classification)
 

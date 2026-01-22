@@ -228,8 +228,8 @@ class NLIModelInfo:
 
 
 NLI_MODEL = NLIModelInfo(
-    id="roberta-large-mnli",
-    name="RoBERTa Large MNLI",
-    size_gb=1.4,
-    description="RoBERTa model for Natural Language Inference. Verifies NPC claims against knowledge base.",
+    id="vectara/hallucination_evaluation_model",
+    name="HHEM Grounding Model",
+    size_gb=0.6,
+    description="Hallucination evaluation model for grounding NPC claims against the knowledge base.",
 )

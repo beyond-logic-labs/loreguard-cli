@@ -1,0 +1,23 @@
+{# Llama 3.1 chat template WITHOUT tool-calling logic #}
+{# This template uses the standard Llama 3.1 format but strips all tool/function calling #}
+{{- bos_token }}
+{%- for message in messages %}
+    {%- if message['role'] == 'system' %}
+{{- '<|start_header_id|>system<|end_header_id|>\n\n' }}
+{{- message['content'] | trim }}
+{{- '<|eot_id|>' }}
+    {%- elif message['role'] == 'user' %}
+{{- '<|start_header_id|>user<|end_header_id|>\n\n' }}
+{{- message['content'] | trim }}
+{{- '<|eot_id|>' }}
+    {%- elif message['role'] == 'assistant' %}
+{{- '<|start_header_id|>assistant<|end_header_id|>\n\n' }}
+{%- if message['content'] %}
+{{- message['content'] | trim }}
+{%- endif %}
+{{- '<|eot_id|>' }}
+    {%- endif %}
+{%- endfor %}
+{%- if add_generation_prompt %}
+{{- '<|start_header_id|>assistant<|end_header_id|>\n\n' }}
+{%- endif %}
