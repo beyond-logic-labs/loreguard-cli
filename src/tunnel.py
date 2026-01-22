@@ -96,6 +96,11 @@ class BackendTunnel:
         # Maps request_id -> asyncio.Queue for routing responses
         self._pending_chat_requests: dict[str, asyncio.Queue[dict[str, Any]]] = {}
 
+        # Follow-up cleanup tasks (ADR-0020)
+        # Maps request_id -> cleanup task that removes queue after timeout
+        self._follow_up_cleanup_tasks: dict[str, asyncio.Task] = {}
+        self._follow_up_cleanup_delay = 20.0  # Keep queue alive for 20s after done
+
     def _log(self, message: str, level: str = "info"):
         """Log a message through callback or fallback to console."""
         if self.log_callback:
@@ -463,6 +468,10 @@ class BackendTunnel:
         elif msg_type == "filler_message":
             # Immediate filler message for chat request
             await self._handle_filler_message(data)
+
+        elif msg_type == "chat_follow_up":
+            # Follow-up push from backend (ADR-0020)
+            await self._handle_chat_follow_up(data)
 
         elif msg_type == "slot_save_request":
             # ADR-0014: Backend wants us to save KV cache to disk
@@ -1247,13 +1256,14 @@ class BackendTunnel:
             logger.warning("chat_stream_done missing requestId")
             return
 
-        queue = self._pending_chat_requests.pop(request_id, None)
+        queue = self._pending_chat_requests.get(request_id)
         if not queue:
             logger.debug(f"No pending chat request for {request_id[:8]}...")
             return
 
-        # Check for error
+        # Check for error (on error, remove the queue immediately)
         if payload.get("errorMessage"):
+            self._pending_chat_requests.pop(request_id, None)
             await queue.put({
                 "type": "error",
                 "error": payload.get("errorMessage"),
@@ -1271,12 +1281,34 @@ class BackendTunnel:
                     "latency_ms": payload.get("latencyMs", 0),
                 },
             })
+            # Schedule cleanup after delay to allow follow-ups (ADR-0020)
+            self._schedule_follow_up_cleanup(request_id)
 
         self._log(
             f"Chat response received: {request_id[:8]}... "
             f"(verified: {payload.get('verified', False)})",
             "success" if payload.get("verified") else "warn",
         )
+
+    def _schedule_follow_up_cleanup(self, request_id: str):
+        """Schedule cleanup of pending chat request after follow-up timeout."""
+        # Cancel existing cleanup task if any
+        existing = self._follow_up_cleanup_tasks.get(request_id)
+        if existing:
+            existing.cancel()
+        # Create new cleanup task
+        cleanup_task = asyncio.create_task(self._run_follow_up_cleanup(request_id))
+        self._follow_up_cleanup_tasks[request_id] = cleanup_task
+
+    async def _run_follow_up_cleanup(self, request_id: str):
+        """Wait for follow-up timeout then cleanup the queue."""
+        try:
+            await asyncio.sleep(self._follow_up_cleanup_delay)
+        except asyncio.CancelledError:
+            return
+        # Cleanup queue and task
+        self._pending_chat_requests.pop(request_id, None)
+        self._follow_up_cleanup_tasks.pop(request_id, None)
 
     async def _handle_filler_message(self, data: dict):
         """Handle a filler_message from the backend."""
@@ -1299,6 +1331,39 @@ class BackendTunnel:
                 "dialogueAct": payload.get("dialogueAct", ""),
             },
         })
+
+    async def _handle_chat_follow_up(self, data: dict):
+        """Handle a chat_follow_up push from the backend (ADR-0020)."""
+        payload = data.get("payload", {})
+        request_id = payload.get("requestId")
+
+        if not request_id:
+            logger.warning("chat_follow_up missing requestId")
+            return
+
+        queue = self._pending_chat_requests.get(request_id)
+        if not queue:
+            logger.debug(f"No pending chat request for follow-up {request_id[:8]}...")
+            return
+
+        follow_up = {
+            "speech": payload.get("speech", ""),
+        }
+        delay_ms = payload.get("delay_ms")
+        if isinstance(delay_ms, int):
+            follow_up["delay_ms"] = delay_ms
+
+        await queue.put({
+            "type": "follow_up",
+            "data": follow_up,
+        })
+        # Reschedule cleanup to allow more follow-ups
+        self._schedule_follow_up_cleanup(request_id)
+        self._log(
+            f"Follow-up received: {request_id[:8]}... "
+            f"(delay: {delay_ms or 0}ms)",
+            "info",
+        )
 
     def _intent_to_llm_request(self, payload: dict) -> dict:
         """Convert backend IntentRequest to LLM request format."""

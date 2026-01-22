@@ -12,6 +12,7 @@ Uses hypercorn with socket-first binding for race-condition-free port allocation
 import asyncio
 import json
 import threading
+import time
 import uuid
 from concurrent.futures import Future
 from typing import Any, Callable, Optional
@@ -193,7 +194,31 @@ class EmbeddedHTTPServer:
                     yield f"event: filler\ndata: {json.dumps(msg.get('data', {}))}\n\n"
                 elif msg_type == "done":
                     yield f"event: done\ndata: {json.dumps(msg.get('data', {}))}\n\n"
+                    # Keep listening for follow-ups with a short timeout (ADR-0020)
+                    follow_up_timeout = 15.0  # Wait up to 15s for follow-ups
+                    follow_up_deadline = time.time() + follow_up_timeout
+                    while time.time() < follow_up_deadline:
+                        try:
+                            remaining = follow_up_deadline - time.time()
+                            if remaining <= 0:
+                                break
+                            if self._main_loop:
+                                future = self._call_on_main_loop(
+                                    asyncio.wait_for(queue.get(), timeout=min(remaining, 1.0))
+                                )
+                                follow_msg = await asyncio.get_event_loop().run_in_executor(
+                                    None, future.result, min(remaining + 1, 2.0)
+                                )
+                            else:
+                                follow_msg = await asyncio.wait_for(queue.get(), timeout=min(remaining, 1.0))
+                            if follow_msg.get("type") == "follow_up":
+                                yield f"event: follow_up\ndata: {json.dumps(follow_msg.get('data', {}))}\n\n"
+                        except (asyncio.TimeoutError, TimeoutError, Exception):
+                            break
                     break
+                elif msg_type == "follow_up":
+                    # Follow-up received before done (shouldn't happen, but handle gracefully)
+                    yield f"event: follow_up\ndata: {json.dumps(msg.get('data', {}))}\n\n"
                 elif msg_type == "error":
                     yield f"event: error\ndata: {json.dumps({'error': msg.get('error')})}\n\n"
                     break
