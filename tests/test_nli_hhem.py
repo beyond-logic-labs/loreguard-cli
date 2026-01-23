@@ -3,7 +3,7 @@ Tests for NLI/HHEM grounding service.
 
 These tests verify that the HHEM implementation correctly:
 1. Detects HHEM vs RoBERTa models
-2. Applies threshold correctly (score >= 0.6 = entailed)
+2. Applies threshold correctly (score >= 0.55 = entailed)
 3. Handles thread safety for concurrent requests
 4. Handles edge cases (empty strings, batch processing)
 """
@@ -56,10 +56,10 @@ class TestHHEMThreshold:
     """Tests for HHEM threshold logic."""
 
     def test_default_threshold(self):
-        """Should use default threshold of 0.6."""
+        """Should use default threshold of 0.55."""
         service = NLIService()
         assert service._hhem_threshold == DEFAULT_HHEM_THRESHOLD
-        assert service._hhem_threshold == 0.6
+        assert service._hhem_threshold == 0.55
 
     def test_custom_threshold(self):
         """Should allow custom threshold."""
@@ -97,7 +97,7 @@ class TestHHEMVerification:
 
     def test_score_above_threshold_is_entailed(self, mock_hhem_service):
         """Score >= threshold should return ENTAILED."""
-        mock_hhem_service._model.predict.return_value = [0.75]  # Above 0.6
+        mock_hhem_service._model.predict.return_value = [0.75]  # Above 0.55
 
         result = mock_hhem_service.verify(
             claim="The sky is blue",
@@ -111,7 +111,7 @@ class TestHHEMVerification:
 
     def test_score_below_threshold_is_neutral(self, mock_hhem_service):
         """Score < threshold should return NEUTRAL."""
-        mock_hhem_service._model.predict.return_value = [0.4]  # Below 0.6
+        mock_hhem_service._model.predict.return_value = [0.4]  # Below 0.55
 
         result = mock_hhem_service.verify(
             claim="The sky is green",
@@ -125,7 +125,7 @@ class TestHHEMVerification:
 
     def test_score_exactly_at_threshold_is_entailed(self, mock_hhem_service):
         """Score exactly at threshold should return ENTAILED (>= not >)."""
-        mock_hhem_service._model.predict.return_value = [0.6]  # Exactly at threshold
+        mock_hhem_service._model.predict.return_value = [0.55]  # Exactly at threshold
 
         result = mock_hhem_service.verify(
             claim="Test claim",
@@ -150,7 +150,7 @@ class TestHHEMVerification:
     def test_custom_threshold_applied(self, mock_hhem_service):
         """Custom threshold should be applied correctly."""
         mock_hhem_service._hhem_threshold = 0.8
-        mock_hhem_service._model.predict.return_value = [0.75]  # Above 0.6 but below 0.8
+        mock_hhem_service._model.predict.return_value = [0.75]  # Above 0.55 but below 0.8
 
         result = mock_hhem_service.verify(claim="test", evidence="test")
 
@@ -194,7 +194,7 @@ class TestHHEMBatchVerification:
 
     def test_batch_applies_threshold_to_each(self, mock_hhem_service):
         """Each result in batch should have threshold applied."""
-        mock_hhem_service._model.predict.return_value = [0.8, 0.4, 0.6]  # above, below, at
+        mock_hhem_service._model.predict.return_value = [0.8, 0.4, 0.55]  # above, below, at
 
         pairs = [
             ("claim1", "evidence1"),
@@ -204,9 +204,9 @@ class TestHHEMBatchVerification:
 
         results = mock_hhem_service.verify_batch(pairs)
 
-        assert results[0].entailment == EntailmentLabel.ENTAILED  # 0.8 >= 0.6
-        assert results[1].entailment == EntailmentLabel.NEUTRAL   # 0.4 < 0.6
-        assert results[2].entailment == EntailmentLabel.ENTAILED  # 0.6 >= 0.6
+        assert results[0].entailment == EntailmentLabel.ENTAILED  # 0.8 >= 0.55
+        assert results[1].entailment == EntailmentLabel.NEUTRAL   # 0.4 < 0.55
+        assert results[2].entailment == EntailmentLabel.ENTAILED  # 0.55 >= 0.55
 
     def test_batch_passes_correct_order(self, mock_hhem_service):
         """Batch should pass (evidence, claim) pairs to model."""
