@@ -8,6 +8,7 @@ providing fast inference (50-100ms vs 1500ms on Fargate).
 """
 
 import logging
+import threading
 from dataclasses import dataclass
 from enum import Enum
 import os
@@ -55,6 +56,7 @@ class NLIService:
 
         Args:
             model_path: Path to local model directory. If None, uses HuggingFace hub.
+            hhem_threshold: Threshold for HHEM grounding score (default 0.6).
         """
         self._model = None
         self._tokenizer = None
@@ -64,6 +66,8 @@ class NLIService:
         self._device = None
         self._max_length = 512
         self._label_order = None
+        # Lock for thread-safe inference (PyTorch models aren't thread-safe)
+        self._inference_lock = threading.Lock()
 
     @property
     def model_name(self) -> str:
@@ -156,6 +160,9 @@ class NLIService:
 
         Returns:
             NLIResult with entailment classification and confidence
+
+        Note:
+            This method is thread-safe - concurrent calls are serialized via lock.
         """
         if self._model is None:
             if not self.load_model():
@@ -163,62 +170,64 @@ class NLIService:
 
         import torch
 
-        if self._use_hhem:
-            scores = self._predict_hhem([(evidence, claim)])
-            score = scores[0]
-            entailment = EntailmentLabel.ENTAILED if score >= self._hhem_threshold else EntailmentLabel.NEUTRAL
-            return NLIResult(
-                entailment=entailment,
-                confidence=score,
-                prob_entailment=score,
-                prob_neutral=1.0 - score,
-                prob_contradiction=0.0,
+        # Thread-safe inference (PyTorch models aren't thread-safe by default)
+        with self._inference_lock:
+            if self._use_hhem:
+                scores = self._predict_hhem([(evidence, claim)])
+                score = scores[0]
+                entailment = EntailmentLabel.ENTAILED if score >= self._hhem_threshold else EntailmentLabel.NEUTRAL
+                return NLIResult(
+                    entailment=entailment,
+                    confidence=score,
+                    prob_entailment=score,
+                    prob_neutral=1.0 - score,
+                    prob_contradiction=0.0,
+                )
+
+            # Tokenize with proper sentence-pair format
+            inputs = self._tokenizer(
+                evidence,  # Premise first
+                claim,     # Hypothesis second
+                max_length=self._max_length,
+                truncation=True,
+                return_tensors="pt",
+                padding=True,
             )
 
-        # Tokenize with proper sentence-pair format
-        inputs = self._tokenizer(
-            evidence,  # Premise first
-            claim,     # Hypothesis second
-            max_length=self._max_length,
-            truncation=True,
-            return_tensors="pt",
-            padding=True,
-        )
+            # Move to device
+            inputs = {k: v.to(self._device) for k, v in inputs.items()}
 
-        # Move to device
-        inputs = {k: v.to(self._device) for k, v in inputs.items()}
+            # Get predictions
+            with torch.no_grad():
+                outputs = self._model(**inputs)
+                logits = outputs.logits
+                probs = torch.softmax(logits, dim=1)[0].cpu().tolist()
 
-        # Get predictions
-        with torch.no_grad():
-            outputs = self._model(**inputs)
-            logits = outputs.logits
-            probs = torch.softmax(logits, dim=1)[0].cpu().tolist()
+            # Map probabilities to labels
+            prob_map = {}
+            for i, label in enumerate(self._label_order):
+                prob_map[label] = probs[i]
 
-        # Map probabilities to labels
-        prob_map = {}
-        for i, label in enumerate(self._label_order):
-            prob_map[label] = probs[i]
+            # Find predicted label
+            predicted_idx = probs.index(max(probs))
+            predicted_label = self._label_order[predicted_idx]
+            confidence = max(probs)
 
-        # Find predicted label
-        predicted_idx = probs.index(max(probs))
-        predicted_label = self._label_order[predicted_idx]
-        confidence = max(probs)
+            # Map to our enum
+            label_to_enum = {
+                "entailment": EntailmentLabel.ENTAILED,
+                "neutral": EntailmentLabel.NEUTRAL,
+                "contradiction": EntailmentLabel.CONTRADICTS,
+            }
+            entailment = label_to_enum[predicted_label]
 
-        # Map to our enum
-        label_to_enum = {
-            "entailment": EntailmentLabel.ENTAILED,
-            "neutral": EntailmentLabel.NEUTRAL,
-            "contradiction": EntailmentLabel.CONTRADICTS,
-        }
-        entailment = label_to_enum[predicted_label]
-
-        return NLIResult(
-            entailment=entailment,
-            confidence=confidence,
-            prob_entailment=prob_map.get("entailment", 0.0),
-            prob_neutral=prob_map.get("neutral", 0.0),
-            prob_contradiction=prob_map.get("contradiction", 0.0),
-        )
+            return NLIResult(
+                entailment=entailment,
+                confidence=confidence,
+                prob_entailment=prob_map.get("entailment", 0.0),
+                prob_neutral=prob_map.get("neutral", 0.0),
+                prob_contradiction=prob_map.get("contradiction", 0.0),
+            )
 
     def verify_batch(self, claims_evidence: List[Tuple[str, str]]) -> List[NLIResult]:
         """Verify multiple claim-evidence pairs in batch.
@@ -228,6 +237,9 @@ class NLIService:
 
         Returns:
             List of NLIResult for each pair
+
+        Note:
+            This method is thread-safe - concurrent calls are serialized via lock.
         """
         if self._model is None:
             if not self.load_model():
@@ -238,66 +250,68 @@ class NLIService:
 
         import torch
 
-        if self._use_hhem:
-            scores = self._predict_hhem([(evidence, claim) for claim, evidence in claims_evidence])
+        # Thread-safe inference (PyTorch models aren't thread-safe by default)
+        with self._inference_lock:
+            if self._use_hhem:
+                scores = self._predict_hhem([(evidence, claim) for claim, evidence in claims_evidence])
+                results = []
+                for score in scores:
+                    entailment = EntailmentLabel.ENTAILED if score >= self._hhem_threshold else EntailmentLabel.NEUTRAL
+                    results.append(NLIResult(
+                        entailment=entailment,
+                        confidence=score,
+                        prob_entailment=score,
+                        prob_neutral=1.0 - score,
+                        prob_contradiction=0.0,
+                    ))
+                return results
+
+            # Prepare batch inputs - evidence (premise) first!
+            premises = [evidence for claim, evidence in claims_evidence]
+            hypotheses = [claim for claim, evidence in claims_evidence]
+
+            inputs = self._tokenizer(
+                premises,
+                hypotheses,
+                max_length=self._max_length,
+                truncation=True,
+                return_tensors="pt",
+                padding=True,
+            )
+
+            inputs = {k: v.to(self._device) for k, v in inputs.items()}
+
+            with torch.no_grad():
+                outputs = self._model(**inputs)
+                logits = outputs.logits
+                all_probs = torch.softmax(logits, dim=1).cpu().tolist()
+
             results = []
-            for score in scores:
-                entailment = EntailmentLabel.ENTAILED if score >= self._hhem_threshold else EntailmentLabel.NEUTRAL
+            label_to_enum = {
+                "entailment": EntailmentLabel.ENTAILED,
+                "neutral": EntailmentLabel.NEUTRAL,
+                "contradiction": EntailmentLabel.CONTRADICTS,
+            }
+
+            for probs in all_probs:
+                prob_map = {}
+                for i, label in enumerate(self._label_order):
+                    prob_map[label] = probs[i]
+
+                predicted_idx = probs.index(max(probs))
+                predicted_label = self._label_order[predicted_idx]
+                confidence = max(probs)
+                entailment = label_to_enum[predicted_label]
+
                 results.append(NLIResult(
                     entailment=entailment,
-                    confidence=score,
-                    prob_entailment=score,
-                    prob_neutral=1.0 - score,
-                    prob_contradiction=0.0,
+                    confidence=confidence,
+                    prob_entailment=prob_map.get("entailment", 0.0),
+                    prob_neutral=prob_map.get("neutral", 0.0),
+                    prob_contradiction=prob_map.get("contradiction", 0.0),
                 ))
+
             return results
-
-        # Prepare batch inputs - evidence (premise) first!
-        premises = [evidence for claim, evidence in claims_evidence]
-        hypotheses = [claim for claim, evidence in claims_evidence]
-
-        inputs = self._tokenizer(
-            premises,
-            hypotheses,
-            max_length=self._max_length,
-            truncation=True,
-            return_tensors="pt",
-            padding=True,
-        )
-
-        inputs = {k: v.to(self._device) for k, v in inputs.items()}
-
-        with torch.no_grad():
-            outputs = self._model(**inputs)
-            logits = outputs.logits
-            all_probs = torch.softmax(logits, dim=1).cpu().tolist()
-
-        results = []
-        label_to_enum = {
-            "entailment": EntailmentLabel.ENTAILED,
-            "neutral": EntailmentLabel.NEUTRAL,
-            "contradiction": EntailmentLabel.CONTRADICTS,
-        }
-
-        for probs in all_probs:
-            prob_map = {}
-            for i, label in enumerate(self._label_order):
-                prob_map[label] = probs[i]
-
-            predicted_idx = probs.index(max(probs))
-            predicted_label = self._label_order[predicted_idx]
-            confidence = max(probs)
-            entailment = label_to_enum[predicted_label]
-
-            results.append(NLIResult(
-                entailment=entailment,
-                confidence=confidence,
-                prob_entailment=prob_map.get("entailment", 0.0),
-                prob_neutral=prob_map.get("neutral", 0.0),
-                prob_contradiction=prob_map.get("contradiction", 0.0),
-            ))
-
-        return results
 
     def _predict_hhem(self, pairs: List[Tuple[str, str]]) -> List[float]:
         """Run HHEM prediction and normalize output to list of floats."""
