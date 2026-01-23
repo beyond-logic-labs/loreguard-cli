@@ -1,7 +1,10 @@
 """Dialogue Act Classification service for filler selection.
 
-Uses DialogTag (DistilBERT) to classify user messages into dialogue act categories
-such as Wh-Question, Yes-No-Question, Action-Directive, Statement, etc.
+Uses DialogTag (DistilBERT) on CPU to classify user messages into dialogue act
+categories such as Wh-Question, Yes-No-Question, Action-Directive, Statement, etc.
+
+CPU is forced to avoid competing with the main LLM for GPU resources.
+DistilBERT is lightweight enough that CPU inference is fast (~10-30ms).
 """
 
 from __future__ import annotations
@@ -46,7 +49,7 @@ class DialogueActResult:
 
 
 class DialogueActClassifier:
-    """Service for dialogue act classification using DialogTag."""
+    """Service for dialogue act classification using DialogTag on CPU."""
 
     def __init__(self, model_name: Optional[str] = None) -> None:
         """Initialize the dialogue act classifier.
@@ -56,7 +59,7 @@ class DialogueActClassifier:
         """
         self._model = None
         self._model_name = model_name or DEFAULT_DIALOGUE_ACT_MODEL
-        self._device = None
+        self._device = "cpu"
         self._load_lock = threading.Lock()
 
     @property
@@ -66,25 +69,13 @@ class DialogueActClassifier:
 
     @property
     def device(self) -> Optional[str]:
-        """Get the device being used (if known)."""
+        """Get the device being used (always CPU)."""
         return self._device
 
     @property
     def is_loaded(self) -> bool:
         """Check if the model is loaded."""
         return self._model is not None
-
-    def _resolve_device(self) -> str:
-        """Resolve the best available device."""
-        try:
-            import torch
-            if torch.cuda.is_available():
-                return "cuda"
-            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                return "mps"
-            return "cpu"
-        except ImportError:
-            return "cpu"
 
     def load_model(self) -> bool:
         """Load the dialogue act model.
@@ -102,7 +93,6 @@ class DialogueActClassifier:
             try:
                 from dialog_tag import DialogTag
 
-                self._device = self._resolve_device()
                 logger.info(
                     "Loading dialogue act classifier: %s (device=%s)",
                     self._model_name,
@@ -110,6 +100,7 @@ class DialogueActClassifier:
                 )
 
                 # DialogTag API may vary by version; try a few signatures.
+                # Always force CPU to avoid competing with LLM for GPU.
                 try:
                     self._model = DialogTag(self._model_name, device=self._device)
                 except TypeError:
@@ -304,5 +295,5 @@ def get_dialogue_act_model_info() -> dict:
         "model_id": DEFAULT_DIALOGUE_ACT_MODEL,
         "url": f"https://huggingface.co/{DEFAULT_DIALOGUE_ACT_MODEL}",
         "size_mb": 250,  # Approximate size
-        "description": "Dialogue act classification model for filler selection",
+        "description": "Dialogue act classification model for filler selection (CPU)",
     }
