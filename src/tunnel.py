@@ -414,6 +414,10 @@ class BackendTunnel:
             # Backend wants us to classify dialogue act
             await self._handle_dialogue_act_classify_request(data)
 
+        elif msg_type == "promise_classify_request":
+            # Backend wants us to detect follow-up promises (ADR-0020)
+            await self._handle_promise_classify_request(data)
+
         elif msg_type == "nli_request":
             # Backend wants us to run NLI verification
             await self._handle_nli_request(data)
@@ -990,6 +994,104 @@ class BackendTunnel:
             await self._send({
                 "id": self._generate_message_id(),
                 "type": "dialogue_act_classify_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
+                    "errorMessage": str(e),
+                },
+            })
+
+    async def _handle_promise_classify_request(self, data: dict):
+        """Handle a promise classification request from the backend (ADR-0020).
+
+        Uses the same IntentClassifier (DeBERTa) with a promise-specific hypothesis
+        to detect if an NPC response contains a follow-up promise.
+        """
+        payload = data.get("payload", {})
+        request_id = payload.get("requestId")
+        trace_id = data.get("traceId", "")
+
+        if not request_id:
+            self._log("Promise classify request missing requestId", "error")
+            return
+
+        if not self.intent_classifier:
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "promise_classify_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
+                    "errorMessage": "Intent classifier not available (required for promise detection)",
+                },
+            })
+            return
+
+        text = payload.get("text", "")
+        timeout_ms = payload.get("timeoutMs", 3000)  # Default 3s for promise detection
+        timeout_s = timeout_ms / 1000.0
+
+        self._log(f"Promise classify request {request_id[:8]}...", "info")
+        start_time = time.time()
+
+        try:
+            # Run promise classification with timeout
+            result = await asyncio.wait_for(
+                asyncio.to_thread(self.intent_classifier.classify_promise, text),
+                timeout=timeout_s
+            )
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "promise_classify_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": True,
+                    "hasPromise": result.has_promise,
+                    "confidence": result.confidence,
+                    "latencyMs": latency_ms,
+                },
+            })
+            self._log(f"Promise classify response: has_promise={result.has_promise} ({latency_ms}ms)", "success")
+
+        except asyncio.TimeoutError:
+            latency_ms = int((time.time() - start_time) * 1000)
+            self._log(f"Promise classify timeout after {latency_ms}ms (limit: {timeout_ms}ms)", "warning")
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "promise_classify_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
+                    "errorMessage": f"Classification timeout ({timeout_ms}ms)",
+                },
+            })
+
+        except Exception as e:
+            logger.exception("Promise classification error")
+            self._log(f"Promise classify error: {e}", "error")
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "promise_classify_response",
                 "timestamp": self._iso_timestamp(),
                 "senderId": self.worker_id,
                 "traceId": trace_id,

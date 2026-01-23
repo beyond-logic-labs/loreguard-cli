@@ -49,6 +49,18 @@ INTENT_HYPOTHESES = {
     IntentLabel.FULL_RETRIEVAL: "This is a complex question that requires comprehensive information retrieval and analysis.",
 }
 
+# Promise detection hypothesis for follow-up triggers (ADR-0020)
+# Single hypothesis - confidence score determines if it's a promise
+PROMISE_HYPOTHESIS = "This statement contains a promise to check, investigate, look into, find out, or get back to someone later."
+
+
+@dataclass
+class PromiseResult:
+    """Result of promise classification."""
+    has_promise: bool   # True if confidence > threshold
+    confidence: float   # Raw score from model (0-1)
+    latency_ms: int     # Classification latency in milliseconds
+
 
 class IntentClassifier:
     """Service for zero-shot intent classification using BART-large-MNLI.
@@ -193,6 +205,46 @@ class IntentClassifier:
                 confidence=0.0,  # 0 confidence indicates fallback
                 latency_ms=0,
             )
+
+    def classify_promise(self, text: str, threshold: float = 0.5) -> PromiseResult:
+        """Classify whether NPC response contains a follow-up promise (ADR-0020).
+
+        Uses single-label zero-shot classification: evaluates how well the text
+        matches the promise hypothesis. High confidence = promise detected.
+
+        Args:
+            text: The NPC's response text to classify
+            threshold: Confidence threshold for promise detection (default 0.5)
+
+        Returns:
+            PromiseResult with has_promise, confidence, and latency_ms
+        """
+        import time
+
+        if self._classifier is None:
+            if not self.load_model():
+                raise RuntimeError("Intent classifier not loaded")
+
+        start_time = time.time()
+
+        # Run zero-shot classification with single hypothesis
+        result = self._classifier(
+            text,
+            candidate_labels=[PROMISE_HYPOTHESIS],
+            hypothesis_template="{}",
+        )
+
+        latency_ms = int((time.time() - start_time) * 1000)
+        confidence = result["scores"][0]
+        has_promise = confidence > threshold
+
+        logger.info(f"Promise classification: has_promise={has_promise} (confidence={confidence:.2f}, threshold={threshold}, latency={latency_ms}ms)")
+
+        return PromiseResult(
+            has_promise=has_promise,
+            confidence=confidence,
+            latency_ms=latency_ms,
+        )
 
     @property
     def is_loaded(self) -> bool:
