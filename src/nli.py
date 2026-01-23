@@ -1,18 +1,28 @@
 """NLI/grounding service for fact verification.
 
-This module provides entailment verification for the NPC dialogue pipeline.
+This module provides grounding verification for the NPC dialogue pipeline.
 It supports both traditional NLI models and HHEM-style grounding models.
 
 This is the client-side implementation that runs locally on the user's machine,
 providing fast inference (50-100ms vs 1500ms on Fargate).
+
+HHEM Best Practices (per Vectara documentation):
+- Input order: (evidence/premise, claim/hypothesis) - asymmetric
+- Score: 0-1 where 1 = fully factually consistent, 0 = hallucinated
+- Threshold: 0.5 recommended by Vectara, we use 0.55 for higher precision
+- The 512 token warning from T5-base can be safely ignored (HHEM-2.1 has unlimited context)
 """
 
 import logging
 import threading
+import warnings
 from dataclasses import dataclass
 from enum import Enum
 import os
 from typing import List, Optional, Tuple
+
+# Suppress the 512 token warning from T5-base (HHEM-2.1 has unlimited context)
+warnings.filterwarnings("ignore", message=".*Token indices sequence length.*")
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +47,9 @@ class NLIResult:
 # Default model for verification (HHEM grounding)
 DEFAULT_NLI_MODEL = "vectara/hallucination_evaluation_model"
 
-# HHEM grounding threshold (entailed if score >= threshold)
-DEFAULT_HHEM_THRESHOLD = 0.6
+# HHEM grounding threshold (factually consistent if score >= threshold)
+# Vectara recommends 0.5; we use 0.55 for slightly higher precision
+DEFAULT_HHEM_THRESHOLD = 0.55
 
 
 class NLIService:
