@@ -146,8 +146,11 @@ class DebugPassWidget(Static):
         # Verdict (Pass 2.5/4.5)
         if verdict := payload.get("verdict"):
             if verdict == "APPROVED":
-                faith = payload.get("faithfulness", 0)
-                text.append(f"✓ APPROVED (faithfulness: {faith:.2f})\n", style=GREEN)
+                faith = payload.get("faithfulness")
+                if faith is not None:
+                    text.append(f"✓ APPROVED (faithfulness: {faith:.2f})\n", style=GREEN)
+                else:
+                    text.append(f"✓ APPROVED\n", style=GREEN)
             else:
                 issues = payload.get("issues", [])
                 text.append(f"✗ ISSUES ({len(issues)})\n", style="#FF5555")
@@ -835,11 +838,9 @@ class NPCChat(Vertical):
         if not local_proxy_url:
             raise httpx.ConnectError("Local proxy URL not found in runtime.json")
 
-        # Create streaming message widget
-        streaming_text = Text()
-        streaming_text.append(f"{self._npc_name}: ", style=f"bold {FG}")
-        streaming_widget = Static(streaming_text, classes="chat-message npc-message")
-        container.mount(streaming_widget)
+        # Widget created lazily on first token
+        streaming_text: Text | None = None
+        streaming_widget: Static | None = None
 
         tokens_received = 0
         speech = ""
@@ -881,6 +882,12 @@ class NPCChat(Vertical):
                         if event_type == "token":
                             token = data.get("t", "")
                             if token:
+                                # Create widget on first token
+                                if streaming_widget is None:
+                                    streaming_text = Text()
+                                    streaming_text.append(f"{self._npc_name}: ", style=f"bold {FG}")
+                                    streaming_widget = Static(streaming_text, classes="chat-message npc-message")
+                                    container.mount(streaming_widget)
                                 tokens_received += 1
                                 speech += token
                                 streaming_text.append(token, style=FG)
@@ -895,11 +902,12 @@ class NPCChat(Vertical):
 
                         elif event_type == "error":
                             error_msg = data.get("error", "Unknown error")
-                            streaming_widget.remove()
+                            if streaming_widget is not None:
+                                streaming_widget.remove()
                             raise Exception(error_msg)
 
         # Update final message with verification indicator
-        if speech:
+        if speech and streaming_widget is not None:
             indicator = "●" if verified else "○"
             final_text = Text()
             final_text.append(f"{self._npc_name}: ", style=f"bold {FG}")
@@ -923,7 +931,8 @@ class NPCChat(Vertical):
             client_latency = int((time.time() - client_start_time) * 1000)
             status.update(Text(f"Done ({client_latency}ms, {tokens_received} tokens)", style=GREEN))
         else:
-            streaming_widget.remove()
+            if streaming_widget is not None:
+                streaming_widget.remove()
             status.update(Text("No response generated", style=FG_DIM))
 
     async def _do_generate_cloud(self, payload: dict, status: Static) -> None:

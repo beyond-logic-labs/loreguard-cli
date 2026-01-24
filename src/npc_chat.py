@@ -337,8 +337,11 @@ class NPCChat:
         # Verdict (Pass 2.5/4.5)
         if verdict := payload.get("verdict"):
             if verdict == "APPROVED":
-                faith = payload.get("faithfulness", 0)
-                print(f"  {c(Colors.BRIGHT_GREEN)}✓ APPROVED{c(Colors.RESET)} {c(Colors.MUTED)}(faithfulness: {faith:.2f}){c(Colors.RESET)}")
+                faith = payload.get("faithfulness")
+                if faith is not None:
+                    print(f"  {c(Colors.BRIGHT_GREEN)}✓ APPROVED{c(Colors.RESET)} {c(Colors.MUTED)}(faithfulness: {faith:.2f}){c(Colors.RESET)}")
+                else:
+                    print(f"  {c(Colors.BRIGHT_GREEN)}✓ APPROVED{c(Colors.RESET)}")
             else:
                 issues = payload.get("issues", [])
                 print(f"  {c(Colors.RED)}✗ ISSUES_FOUND ({len(issues)} issue(s)){c(Colors.RESET)}")
