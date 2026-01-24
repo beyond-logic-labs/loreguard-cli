@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from .nli import NLIService
     from .intent_classifier import IntentClassifier
     from .dialogue_act_classifier import DialogueActClassifier
+    from .chunk_detector import ChunkDetector
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -59,6 +60,7 @@ class BackendTunnel:
         nli_service: Optional["NLIService"] = None,
         intent_classifier: Optional["IntentClassifier"] = None,
         dialogue_act_classifier: Optional["DialogueActClassifier"] = None,
+        chunk_detector: Optional["ChunkDetector"] = None,
         log_callback: Callable[[str, str], None] | None = None,
         max_retries: int = -1,  # -1 = infinite retries, 0 = no retries (single try)
     ):
@@ -70,6 +72,7 @@ class BackendTunnel:
         self.nli_service = nli_service
         self.intent_classifier = intent_classifier  # ADR-0010: Intent classification
         self.dialogue_act_classifier = dialogue_act_classifier  # Dialogue act classification for fillers
+        self.chunk_detector = chunk_detector  # ADR-0023: Natural conversation breaks
         self.log_callback = log_callback
         self.max_retries = max_retries
 
@@ -258,6 +261,9 @@ class BackendTunnel:
         if self.dialogue_act_classifier is not None and self.dialogue_act_classifier.is_loaded:
             capabilities.append("dialogue_act")
             self._log("Dialogue act capability enabled", "info")
+        if self.chunk_detector is not None and self.chunk_detector.is_loaded:
+            capabilities.append("chunk")
+            self._log("Chunk detection capability enabled (ADR-0023)", "info")
 
         # Build registration message
         register_msg = {
@@ -417,6 +423,10 @@ class BackendTunnel:
         elif msg_type == "promise_classify_request":
             # Backend wants us to detect follow-up promises (ADR-0020)
             await self._handle_promise_classify_request(data)
+
+        elif msg_type == "chunk_detect_request":
+            # Backend wants us to detect natural conversation breaks (ADR-0023)
+            await self._handle_chunk_detect_request(data)
 
         elif msg_type == "nli_request":
             # Backend wants us to run NLI verification
@@ -1103,6 +1113,106 @@ class BackendTunnel:
                 },
             })
 
+    async def _handle_chunk_detect_request(self, data: dict):
+        """Handle a chunk detection request from the backend (ADR-0023).
+
+        Uses DeBERTa to detect natural conversation breaks in NPC responses.
+        Returns the text split into chunks for sequential delivery.
+        """
+        payload = data.get("payload", {})
+        request_id = payload.get("requestId")
+        trace_id = data.get("traceId", "")
+
+        if not request_id:
+            self._log("Chunk detect request missing requestId", "error")
+            return
+
+        if not self.chunk_detector:
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "chunk_detect_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
+                    "errorMessage": "Chunk detector not available",
+                },
+            })
+            return
+
+        text = payload.get("text", "")
+        timeout_ms = payload.get("timeoutMs", 3000)  # Default 3s for chunk detection
+        timeout_s = timeout_ms / 1000.0
+
+        self._log(f"Chunk detect request {request_id[:8]}... ({len(text)} chars)", "info")
+        start_time = time.time()
+
+        try:
+            # Run chunk detection with timeout
+            result = await asyncio.wait_for(
+                asyncio.to_thread(self.chunk_detector.detect, text),
+                timeout=timeout_s
+            )
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            # Convert TextChunk objects to dicts for JSON serialization
+            chunks = [{"text": chunk.text, "index": chunk.index} for chunk in result.chunks]
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "chunk_detect_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": True,
+                    "chunks": chunks,
+                    "latencyMs": latency_ms,
+                },
+            })
+            self._log(f"Chunk detect response: {len(chunks)} chunks ({latency_ms}ms)", "success")
+
+        except asyncio.TimeoutError:
+            latency_ms = int((time.time() - start_time) * 1000)
+            self._log(f"Chunk detect timeout after {latency_ms}ms (limit: {timeout_ms}ms)", "warning")
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "chunk_detect_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
+                    "errorMessage": f"Chunk detection timeout ({timeout_ms}ms)",
+                },
+            })
+
+        except Exception as e:
+            logger.exception("Chunk detection error")
+            self._log(f"Chunk detect error: {e}", "error")
+
+            await self._send({
+                "id": self._generate_message_id(),
+                "type": "chunk_detect_response",
+                "timestamp": self._iso_timestamp(),
+                "senderId": self.worker_id,
+                "traceId": trace_id,
+                "payload": {
+                    "requestId": request_id,
+                    "workerId": self.worker_id,
+                    "success": False,
+                    "errorMessage": str(e),
+                },
+            })
+
     async def _handle_nli_request(self, data: dict):
         """Handle an NLI verification request from the backend."""
         payload = data.get("payload", {})
@@ -1267,8 +1377,10 @@ class BackendTunnel:
         request_id: str,
         character_id: str,
         message: str,
+        player_id: str = "",
         player_handle: str = "",
         current_context: str = "",
+        scenario_id: str = "",
         history: list[dict[str, Any]] | None = None,
         enable_thinking: bool = False,
         verbose: bool = False,
@@ -1279,6 +1391,10 @@ class BackendTunnel:
 
         The game client calls POST /api/chat on localhost, which calls this method.
         The backend runs the pipeline and sends tokens/completion back.
+
+        Args:
+            player_id: Player's unique ID for per-player state/memory. If empty,
+                      backend uses the owner ID (developer mode fallback).
 
         Returns:
             Queue that will receive:
@@ -1303,12 +1419,16 @@ class BackendTunnel:
             "message": message,
             "playerHandle": player_handle,
             "currentContext": current_context,
+            "scenarioId": scenario_id,
             "history": history or [],
             "enableThinking": enable_thinking,
             "verbose": verbose,
             "stream": True,  # Always streaming for SSE
             "apiToken": api_token,  # For backend to authorize character access
         }
+        # Only include playerId if provided
+        if player_id:
+            payload["playerId"] = player_id
         # Only include maxSpeechTokens if explicitly set (non-zero)
         if max_speech_tokens > 0:
             payload["maxSpeechTokens"] = max_speech_tokens

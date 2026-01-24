@@ -322,9 +322,11 @@ class EmbeddedHTTPServer:
 
             body = await request.json()
             history = body.get("history") or body.get("context") or []
+            player_id = body.get("player_id", body.get("playerId", ""))
             player_handle = body.get("player_handle", body.get("playerHandle", ""))
             character_id = body.get("character_id", body.get("characterId", ""))
             current_context = body.get("current_context", body.get("currentContext", ""))
+            scenario_id = body.get("scenario_id", body.get("scenarioId", ""))
             enable_thinking = body.get("enable_thinking", body.get("enableThinking", False))
             max_speech_tokens = body.get("max_speech_tokens", body.get("maxSpeechTokens", 0))
             accept = request.headers.get("accept", "")
@@ -344,8 +346,10 @@ class EmbeddedHTTPServer:
                             request_id=request_id,
                             character_id=character_id,
                             message=body.get("message", ""),
+                            player_id=player_id,
                             player_handle=player_handle,
                             current_context=current_context,
+                            scenario_id=scenario_id,
                             history=history,
                             enable_thinking=enable_thinking,
                             verbose=body.get("verbose", False),
@@ -365,8 +369,10 @@ class EmbeddedHTTPServer:
                     request_id=request_id,
                     character_id=character_id,
                     message=body.get("message", ""),
+                    player_id=player_id,
                     player_handle=player_handle,
                     current_context=current_context,
+                    scenario_id=scenario_id,
                     history=history,
                     enable_thinking=enable_thinking,
                     verbose=body.get("verbose", False),
