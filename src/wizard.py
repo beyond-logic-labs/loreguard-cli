@@ -1596,7 +1596,7 @@ async def step_start(
                                 status.stop()
                                 from .npc_chat import run_npc_chat
                                 try:
-                                    await run_npc_chat(api_token=token, tunnel=tunnel)
+                                    await run_npc_chat(api_token=token, tunnel=tunnel, verbose=_verbose)
                                 except KeyboardInterrupt:
                                     pass
                                 status.start()
