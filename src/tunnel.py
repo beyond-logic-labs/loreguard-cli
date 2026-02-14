@@ -470,6 +470,8 @@ class BackendTunnel:
             payload = data.get("payload", {})
             if self.on_pass_update:
                 self.on_pass_update(payload)
+            # Also route to per-request queue for HTTP/SSE clients
+            await self._handle_pass_update(data)
 
         elif msg_type == "chat_stream_token":
             # Token from backend for a chat request (local proxy architecture)
@@ -1586,6 +1588,29 @@ class BackendTunnel:
             f"(delay: {delay_ms or 0}ms)",
             "info",
         )
+
+    async def _handle_pass_update(self, data: dict):
+        """Handle a pass_update message from the backend (verbose mode).
+
+        Routes pipeline pass updates into the per-request response queue
+        so HTTP/SSE clients can receive verbose pipeline data.
+        """
+        payload = data.get("payload", {})
+        request_id = payload.get("requestId")
+
+        if not request_id:
+            logger.debug("pass_update missing requestId, skipping queue routing")
+            return
+
+        queue = self._pending_chat_requests.get(request_id)
+        if not queue:
+            logger.debug(f"No pending chat request for pass_update {request_id[:8]}...")
+            return
+
+        await queue.put({
+            "type": "pass_update",
+            "data": payload,
+        })
 
     def _intent_to_llm_request(self, payload: dict) -> dict:
         """Convert backend IntentRequest to LLM request format."""

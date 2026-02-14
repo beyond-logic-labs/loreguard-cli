@@ -192,6 +192,8 @@ class EmbeddedHTTPServer:
                     yield f"event: token\ndata: {json.dumps({'t': msg.get('token', '')})}\n\n"
                 elif msg_type == "filler":
                     yield f"event: filler\ndata: {json.dumps(msg.get('data', {}))}\n\n"
+                elif msg_type == "pass_update":
+                    yield f"event: pass_update\ndata: {json.dumps(msg.get('data', {}))}\n\n"
                 elif msg_type == "done":
                     yield f"event: done\ndata: {json.dumps(msg.get('data', {}))}\n\n"
                     # Keep listening for follow-ups with a short timeout (ADR-0020)
@@ -261,7 +263,7 @@ class EmbeddedHTTPServer:
                         "verified": data.get("verified", False),
                         "citations": data.get("citations", []),
                     }
-                elif msg_type == "filler":
+                elif msg_type in ("filler", "pass_update"):
                     continue
                 elif msg_type == "error":
                     return {"error": msg.get("error", "Unknown error")}
