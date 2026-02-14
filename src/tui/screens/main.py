@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
@@ -655,10 +656,12 @@ class MainScreen(Screen):
                 # Log SDK server status
                 pass  # Could update a status widget here
 
+            sdk_port_env = int(os.environ.get("LOREGUARD_SDK_PORT", "0"))
             sdk_port = start_sdk_server(
                 tunnel=app._tunnel,
                 on_status_change=on_sdk_status,
                 main_loop=asyncio.get_event_loop(),
+                port=sdk_port_env,
             )
             self._sdk_port = sdk_port
 

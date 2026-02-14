@@ -274,9 +274,12 @@ def download_dialogue_act_model(progress_callback=None, error_callback=None) -> 
                 DEFAULT_DIALOGUE_ACT_MODEL,
                 local_files_only=False,
                 tqdm_class=TqdmCallback,
+                max_workers=1,  # Avoid subprocess fd issues in ThreadPoolExecutor
             )
         else:
-            snapshot_download(DEFAULT_DIALOGUE_ACT_MODEL, local_files_only=False)
+            # max_workers=1 prevents "bad value(s) in fds_to_keep" error
+            # when running from ThreadPoolExecutor
+            snapshot_download(DEFAULT_DIALOGUE_ACT_MODEL, local_files_only=False, max_workers=1)
 
         logger.info("Dialogue act model downloaded successfully")
         return True

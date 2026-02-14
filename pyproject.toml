@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "loreguard-cli"
-version = "0.11.2"
+version = "0.12.0"
 description = "Local inference client for Loreguard NPCs"
 readme = "README.md"
 license = "MIT"
@@ -34,6 +34,7 @@ dependencies = [
     "uvicorn>=0.27.0",
     "python-dotenv>=1.0.0",
     "DialogTag",
+    "tf-keras>=2.16.0",  # Required for DeBERTa intent classifier (Keras 3 compatibility)
 ]
 
 [project.urls]

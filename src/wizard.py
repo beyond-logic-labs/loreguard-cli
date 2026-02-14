@@ -1480,6 +1480,34 @@ async def step_start(
                     status.log(f"Dialogue act error: {e}", "error")
                     dialogue_act_classifier = None
 
+            # Initialize chunk detector (ADR-0023) - shares model with intent classifier
+            chunk_detector = None
+            if intent_enabled:
+                status.set_line("chunk", "Chunk Detect", "Loading...")
+                try:
+                    from .chunk_detector import ChunkDetector
+                    chunk_detector = ChunkDetector()
+                    # Share classifier with intent_classifier if available
+                    if intent_classifier is not None and intent_classifier.is_loaded:
+                        chunk_detector.set_classifier(intent_classifier._classifier)
+                        status.set_line("chunk", "Chunk Detect", f"✓ Ready (shared)")
+                    else:
+                        # Load independently
+                        loop = asyncio.get_event_loop()
+                        with concurrent.futures.ThreadPoolExecutor() as pool:
+                            with suppress_external_output():
+                                model_loaded = await loop.run_in_executor(pool, chunk_detector.load_model)
+                        if model_loaded:
+                            status.set_line("chunk", "Chunk Detect", f"✓ Ready ({chunk_detector.device})")
+                        else:
+                            status.set_line("chunk", "Chunk Detect", "✗ Failed to load")
+                            status.log("Chunk detector failed to load - continuing without", "warn")
+                            chunk_detector = None
+                except Exception as e:
+                    status.set_line("chunk", "Chunk Detect", f"✗ Error: {e}")
+                    status.log(f"Chunk detector error: {e}", "error")
+                    chunk_detector = None
+
             model_id = _resolve_backend_model_id(model_path.stem)
             tunnel = BackendTunnel(
                 backend_url="wss://api.loreguard.com/workers",
@@ -1490,6 +1518,7 @@ async def step_start(
                 nli_service=nli_service,
                 intent_classifier=intent_classifier,
                 dialogue_act_classifier=dialogue_act_classifier,
+                chunk_detector=chunk_detector,
                 log_callback=status.log,
             )
             asyncio.create_task(tunnel.connect())

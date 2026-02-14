@@ -218,6 +218,8 @@ class EmbeddedHTTPServer:
                         except (asyncio.TimeoutError, TimeoutError, Exception):
                             break
                     break
+                elif msg_type == "pass_update":
+                    yield f"event: pass_update\ndata: {json.dumps(msg.get('data', {}))}\n\n"
                 elif msg_type == "follow_up":
                     # Follow-up received before done (shouldn't happen, but handle gracefully)
                     yield f"event: follow_up\ndata: {json.dumps(msg.get('data', {}))}\n\n"
@@ -236,6 +238,7 @@ class EmbeddedHTTPServer:
 
     async def _wait_for_response(self, request_id: str, queue: asyncio.Queue) -> dict:
         """Wait for complete response (non-streaming mode)."""
+        pipeline_trace = []
         try:
             while True:
                 try:
@@ -258,12 +261,18 @@ class EmbeddedHTTPServer:
                 msg_type = msg.get("type")
                 if msg_type == "done":
                     data = msg.get("data", {})
-                    return {
+                    result = {
                         "response": data.get("speech", ""),
                         "verified": data.get("verified", False),
                         "citations": data.get("citations", []),
                     }
-                elif msg_type in ("filler", "pass_update"):
+                    if pipeline_trace:
+                        result["pipeline_trace"] = pipeline_trace
+                    return result
+                elif msg_type == "pass_update":
+                    pipeline_trace.append(msg.get("data", {}))
+                    continue
+                elif msg_type == "filler":
                     continue
                 elif msg_type == "error":
                     return {"error": msg.get("error", "Unknown error")}

@@ -240,12 +240,46 @@ class LoreguardCLI:
         try:
             llm_proxy = LLMProxy(f"http://127.0.0.1:{self.port}")
 
+            # Initialize intent classifier (ADR-0010)
+            intent_classifier = None
+            try:
+                from .intent_classifier import IntentClassifier
+                log.info("Loading intent classifier...")
+                intent_classifier = IntentClassifier()
+                if intent_classifier.load_model():
+                    log.info(f"Intent classifier ready (device: {intent_classifier.device})")
+                else:
+                    log.warning("Intent classifier failed to load")
+                    intent_classifier = None
+            except Exception as e:
+                log.warning(f"Intent classifier error: {e}")
+
+            # Initialize chunk detector (ADR-0023) - shares model with intent classifier
+            chunk_detector = None
+            try:
+                from .chunk_detector import ChunkDetector
+                log.info("Loading chunk detector...")
+                chunk_detector = ChunkDetector()
+                if intent_classifier is not None and intent_classifier.is_loaded:
+                    chunk_detector.set_classifier(intent_classifier._classifier)
+                    log.info("Chunk detector ready (shared model)")
+                else:
+                    if chunk_detector.load_model():
+                        log.info(f"Chunk detector ready (device: {chunk_detector.device})")
+                    else:
+                        log.warning("Chunk detector failed to load")
+                        chunk_detector = None
+            except Exception as e:
+                log.warning(f"Chunk detector error: {e}")
+
             self._tunnel = BackendTunnel(
                 backend_url=self.backend_url,
                 llm_proxy=llm_proxy,
                 worker_id=self.worker_id,
                 worker_token=self.token,
                 model_id=self.model_path.stem if self.model_path else "unknown",
+                intent_classifier=intent_classifier,
+                chunk_detector=chunk_detector,
             )
 
             self._tunnel.on_request_complete = self._on_request_complete
@@ -253,9 +287,11 @@ class LoreguardCLI:
             # Start SDK server for local game clients
             from .http_server import start_sdk_server
             try:
+                sdk_port = int(os.environ.get("LOREGUARD_SDK_PORT", "0"))
                 self._sdk_port = start_sdk_server(
                     tunnel=self._tunnel,
                     main_loop=asyncio.get_running_loop(),
+                    port=sdk_port,
                 )
                 log.info(f"SDK server listening on 127.0.0.1:{self._sdk_port}")
             except Exception as e:

@@ -404,9 +404,13 @@ def download_nli_model(progress_callback=None, error_callback=None) -> bool:
                 DEFAULT_NLI_MODEL,
                 local_files_only=False,
                 tqdm_class=TqdmCallback,
+                max_workers=1,  # Avoid subprocess fd issues in ThreadPoolExecutor
             )
         else:
-            snapshot_download(DEFAULT_NLI_MODEL, local_files_only=False)
+            # max_workers=1 prevents "bad value(s) in fds_to_keep" error
+            # when running from ThreadPoolExecutor (parallel downloads spawn
+            # subprocesses that conflict with thread-based fd management)
+            snapshot_download(DEFAULT_NLI_MODEL, local_files_only=False, max_workers=1)
 
         logger.info("NLI model downloaded successfully")
         return True

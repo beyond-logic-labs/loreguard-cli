@@ -145,6 +145,28 @@ async def startup():
     else:
         console.print("[yellow]Dialogue act classifier disabled (set LOREGUARD_DIALOGUE_ACT_ENABLED=true to enable)[/yellow]")
 
+    # Initialize chunk detector (ADR-0023 - for natural conversation breaks)
+    # Shares model with intent classifier if available
+    chunk_detector = None
+    if enable_intent:
+        console.print("[cyan]Initializing chunk detector...[/cyan]")
+        try:
+            from .chunk_detector import ChunkDetector
+            chunk_detector = ChunkDetector()
+            # Share classifier with intent_classifier if available
+            if intent_classifier is not None and intent_classifier.is_loaded:
+                chunk_detector.set_classifier(intent_classifier._classifier)
+                console.print("[green]Chunk detector ready (shared model)[/green]")
+            else:
+                if chunk_detector.load_model():
+                    console.print(f"[green]Chunk detector ready (device: {chunk_detector.device})[/green]")
+                else:
+                    console.print("[yellow]Warning: Chunk detector failed to load[/yellow]")
+                    chunk_detector = None
+        except Exception as e:
+            console.print(f"[yellow]Warning: Chunk detector error: {e}[/yellow]")
+            chunk_detector = None
+
     # Connect to remote backend
     backend_url = get_config_value("BACKEND_URL", "wss://api.lorekeeper.ai/workers")
     worker_id = get_config_value("WORKER_ID", "")
@@ -159,6 +181,7 @@ async def startup():
             nli_service=nli_service,
             intent_classifier=intent_classifier,
             dialogue_act_classifier=dialogue_act_classifier,
+            chunk_detector=chunk_detector,
         )
         asyncio.create_task(tunnel.connect())
     elif backend_url:

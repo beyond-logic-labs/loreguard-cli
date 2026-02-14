@@ -1,7 +1,7 @@
 """Intent Classification service for adaptive retrieval (ADR-0010).
 
 This module provides zero-shot intent classification for the NPC dialogue pipeline.
-It uses BART-large-MNLI to classify user messages into retrieval strategy categories:
+It uses DeBERTa-v3-large-zeroshot to classify user messages into retrieval strategy categories:
 - A_NO_RETRIEVAL: Greetings, chitchat, farewells (skip retrieval)
 - B_WORKING_MEMORY: Simple identity/state questions (working memory only)
 - C_LIGHT_RETRIEVAL: Direct factual questions (top 3 sources)
@@ -41,12 +41,15 @@ class IntentResult:
 DEFAULT_INTENT_MODEL = "MoritzLaurer/DeBERTa-v3-large-zeroshot-v2.0"
 
 # Intent hypothesis templates for zero-shot classification
-# Each intent maps to a hypothesis that BART will evaluate
+# Each intent maps to a hypothesis that DeBERTa will evaluate
+# NOTE: Hypotheses must be specific to avoid misclassification of mixed-intent messages
+# (e.g., "hey, how are you? what's the ISP fee?" should match LIGHT_RETRIEVAL, not WORKING_MEMORY)
+# TODO: Move hypotheses to backend for centralized control (see loreguard-engine issue)
 INTENT_HYPOTHESES = {
-    IntentLabel.NO_RETRIEVAL: "This is a greeting, chitchat, or farewell that does not require any information retrieval.",
-    IntentLabel.WORKING_MEMORY: "This is a simple question about identity, name, or basic state that only requires basic memory.",
-    IntentLabel.LIGHT_RETRIEVAL: "This is a direct factual question that requires looking up specific information.",
-    IntentLabel.FULL_RETRIEVAL: "This is a complex question that requires comprehensive information retrieval and analysis.",
+    IntentLabel.NO_RETRIEVAL: "This is a greeting, farewell, or a vague question about availability without asking for any specific information.",
+    IntentLabel.WORKING_MEMORY: "This asks about the person's current life, recent experiences, what they've been up to, or how things are going for them.",
+    IntentLabel.LIGHT_RETRIEVAL: "This asks for a specific fact, number, price, fee, date, location, or procedure that requires looking up information.",
+    IntentLabel.FULL_RETRIEVAL: "This is a complex question requiring analysis of multiple topics or understanding relationships between different pieces of information.",
 }
 
 # Promise detection hypothesis for follow-up triggers (ADR-0020)
@@ -63,7 +66,7 @@ class PromiseResult:
 
 
 class IntentClassifier:
-    """Service for zero-shot intent classification using BART-large-MNLI.
+    """Service for zero-shot intent classification using DeBERTa-v3-large-zeroshot.
 
     Uses zero-shot classification to categorize user messages into one of four
     retrieval strategies without any fine-tuning required.
@@ -261,7 +264,7 @@ def is_intent_model_available() -> bool:
     """Check if the intent model is available in HuggingFace cache.
 
     The transformers library caches models in ~/.cache/huggingface/hub/.
-    This function checks if the BART model has been downloaded.
+    This function checks if the DeBERTa model has been downloaded.
     """
     try:
         from huggingface_hub import try_to_load_from_cache
@@ -314,9 +317,12 @@ def download_intent_model(progress_callback=None, error_callback=None) -> bool:
                 DEFAULT_INTENT_MODEL,
                 local_files_only=False,
                 tqdm_class=TqdmCallback,
+                max_workers=1,  # Avoid subprocess fd issues in ThreadPoolExecutor
             )
         else:
-            snapshot_download(DEFAULT_INTENT_MODEL, local_files_only=False)
+            # max_workers=1 prevents "bad value(s) in fds_to_keep" error
+            # when running from ThreadPoolExecutor
+            snapshot_download(DEFAULT_INTENT_MODEL, local_files_only=False, max_workers=1)
 
         logger.info("Intent model downloaded successfully")
         return True
