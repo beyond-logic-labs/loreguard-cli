@@ -5,9 +5,12 @@ Uses the local proxy for NPC conversations with token streaming:
 """
 
 import json
+import logging
 from typing import TYPE_CHECKING
 
 import httpx
+
+logger = logging.getLogger(__name__)
 from textual.app import ComposeResult
 from textual.containers import Vertical, Horizontal, VerticalScroll
 from textual.widgets import Static, Input
@@ -799,11 +802,11 @@ class NPCChat(Vertical):
             if self._verbose:
                 payload["verbose"] = True
 
+            local_url = get_local_proxy_url()
             try:
                 await self._do_generate_streaming(payload, status, container)
                 return
             except httpx.ConnectError as e:
-                local_url = get_local_proxy_url()
                 if self._verbose:
                     if local_url:
                         status.update(Text(f"Local proxy failed ({local_url}): {e}", style=FG_DIM))
@@ -812,7 +815,6 @@ class NPCChat(Vertical):
                 else:
                     status.update(Text("Local proxy unavailable, using cloud...", style=FG_DIM))
             except Exception as e:
-                local_url = get_local_proxy_url()
                 if self._verbose:
                     status.update(Text(f"Local proxy error ({local_url}): {type(e).__name__}: {e}", style="#FF5555"))
                 else:
@@ -894,6 +896,9 @@ class NPCChat(Vertical):
                                 streaming_widget.update(streaming_text)
                                 container.scroll_end(animate=False)
                                 status.update(Text(f"Streaming... ({tokens_received} tokens)", style=CYAN))
+
+                        elif event_type == "pass_update":
+                            self.on_pass_update(data)
 
                         elif event_type == "done":
                             final_data = data
@@ -987,15 +992,18 @@ class NPCChat(Vertical):
 
         Called by the tunnel when it receives pass updates via WebSocket.
         """
+        logger.debug(f"on_pass_update called: verbose={self._verbose}, visible={self._visible}, payload_keys={list(payload.keys()) if payload else 'None'}")
         if not self._verbose or not self._visible:
+            logger.debug(f"on_pass_update skipped: verbose={self._verbose}, visible={self._visible}")
             return
 
         # Add pass to debug panel instead of chat
         try:
             debug_panel = self.query_one(DebugPanel)
             debug_panel.add_pass(payload)
-        except Exception:
-            pass
+            logger.debug(f"on_pass_update: added pass to debug panel")
+        except Exception as e:
+            logger.debug(f"on_pass_update exception: {e}")
 
     def action_close_chat(self) -> None:
         """Close the chat widget."""

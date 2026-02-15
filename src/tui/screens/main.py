@@ -641,11 +641,12 @@ class MainScreen(Screen):
 
             # Wire up pass update callback to chat widget (for verbose mode)
             def on_pass_update(payload: dict) -> None:
+                log.debug(f"tunnel on_pass_update callback fired, payload keys: {list(payload.keys()) if payload else 'None'}")
                 try:
                     chat = self.query_one(NPCChat)
                     chat.on_pass_update(payload)
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.debug(f"tunnel on_pass_update callback error: {e}")
 
             app._tunnel.on_pass_update = on_pass_update
 
