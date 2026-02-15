@@ -284,6 +284,24 @@ class RunningScreen(Screen):
                     self._log(f"Dialogue act classifier error: {e}", "error")
                     dialogue_act_classifier = None
 
+                # Initialize chunk detector (ADR-0023) - shares DeBERTa model with intent classifier
+                chunk_detector = None
+                try:
+                    from ...chunk_detector import ChunkDetector
+
+                    chunk_detector = ChunkDetector()
+                    if intent_classifier is not None and intent_classifier._classifier is not None:
+                        chunk_detector.set_classifier(intent_classifier._classifier)
+                        self._log("Chunk detector ready (shared model)", "success")
+                    else:
+                        if await asyncio.to_thread(chunk_detector.load_model):
+                            self._log(f"Chunk detector ready ({chunk_detector.device})", "success")
+                        else:
+                            chunk_detector = None
+                except Exception as e:
+                    self._log(f"Chunk detector error: {e}", "error")
+                    chunk_detector = None
+
                 # Get model ID for backend
                 model_id = app.model_path.stem
 
@@ -296,6 +314,7 @@ class RunningScreen(Screen):
                     nli_service=nli_service,
                     intent_classifier=intent_classifier,
                     dialogue_act_classifier=dialogue_act_classifier,
+                    chunk_detector=chunk_detector,
                     log_callback=self._log,
                 )
                 self._tunnel.on_request_complete = self._on_request_complete

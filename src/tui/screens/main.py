@@ -580,6 +580,28 @@ class MainScreen(Screen):
                 self._log(f"Dialogue act classifier error: {e}", "error")
                 dialogue_act_classifier = None
 
+            # Initialize chunk detector (ADR-0023) - shares DeBERTa model with intent classifier
+            chunk_detector = None
+            try:
+                from ...chunk_detector import ChunkDetector
+
+                chunk_detector = ChunkDetector()
+                if intent_classifier is not None and intent_classifier._classifier is not None:
+                    chunk_detector.set_classifier(intent_classifier._classifier)
+                    self._log("Chunk detector ready (shared model)", "success")
+                else:
+                    loop = asyncio.get_event_loop()
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        with suppress_external_output():
+                            if await loop.run_in_executor(pool, chunk_detector.load_model):
+                                self._log(f"Chunk detector ready ({chunk_detector.device})", "success")
+                            else:
+                                self._log("Chunk detector failed to load", "warning")
+                                chunk_detector = None
+            except Exception as e:
+                self._log(f"Chunk detector error: {e}", "error")
+                chunk_detector = None
+
             self._update_status("Connecting to backend...", log=False)
             self._log("Connecting to Loreguard backend...")
 
@@ -628,6 +650,7 @@ class MainScreen(Screen):
                 nli_service=nli_service,
                 intent_classifier=intent_classifier,
                 dialogue_act_classifier=dialogue_act_classifier,
+                chunk_detector=chunk_detector,
                 log_callback=log_callback,
                 max_retries=0,  # Single try, no retries
             )
