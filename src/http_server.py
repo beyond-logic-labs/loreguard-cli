@@ -266,6 +266,8 @@ class EmbeddedHTTPServer:
                         "verified": data.get("verified", False),
                         "citations": data.get("citations", []),
                     }
+                    if data.get("chunks"):
+                        result["chunks"] = data["chunks"]
                     if pipeline_trace:
                         result["pipeline_trace"] = pipeline_trace
                     return result
@@ -323,6 +325,18 @@ class EmbeddedHTTPServer:
                     content={"status": "error", "error": str(e)},
                 )
 
+        @app.get("/api/capabilities")
+        async def capabilities():
+            caps = {
+                "streaming": True,
+                "chunk_modes": ["sentence"],
+                "manages_history": False,
+            }
+            if server.tunnel:
+                if getattr(server.tunnel, "chunk_detector", None) and server.tunnel.chunk_detector.is_loaded:
+                    caps["chunk_modes"].append("deberta")
+            return caps
+
         @app.post("/api/chat")
         async def chat(request: Request):
             if not server.tunnel or not server.tunnel.connected:
@@ -340,6 +354,8 @@ class EmbeddedHTTPServer:
             scenario_id = body.get("scenario_id", body.get("scenarioId", ""))
             enable_thinking = body.get("enable_thinking", body.get("enableThinking", False))
             max_speech_tokens = body.get("max_speech_tokens", body.get("maxSpeechTokens", 0))
+            chunk_mode = body.get("chunk_mode", body.get("chunkMode", ""))
+            manage_history = body.get("manage_history", body.get("manageHistory", False))
             accept = request.headers.get("accept", "")
             streaming = "text/event-stream" in accept
 
@@ -366,6 +382,8 @@ class EmbeddedHTTPServer:
                             verbose=body.get("verbose", False),
                             api_token=api_token,
                             max_speech_tokens=max_speech_tokens,
+                            chunk_mode=chunk_mode,
+                            manage_history=manage_history,
                         )
                     )
                     # Wait for the result
@@ -389,6 +407,8 @@ class EmbeddedHTTPServer:
                     verbose=body.get("verbose", False),
                     api_token=api_token,
                     max_speech_tokens=max_speech_tokens,
+                    chunk_mode=chunk_mode,
+                    manage_history=manage_history,
                 )
 
             if streaming:

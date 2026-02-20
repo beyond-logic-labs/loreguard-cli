@@ -468,6 +468,7 @@ class BackendTunnel:
         elif msg_type == "pass_update":
             # Pipeline pass update (verbose mode)
             payload = data.get("payload", {})
+            self._log(f"[pass_update] received pass={payload.get('pass','?')} name={payload.get('name','?')}", "info")
             if self.on_pass_update:
                 self.on_pass_update(payload)
             # Also route to per-request queue for HTTP/SSE clients
@@ -1388,6 +1389,8 @@ class BackendTunnel:
         verbose: bool = False,
         api_token: str = "",
         max_speech_tokens: int = 0,
+        chunk_mode: str = "",
+        manage_history: bool = False,
     ) -> asyncio.Queue[dict[str, Any]]:
         """Send a chat request to the backend and return a queue for responses.
 
@@ -1434,6 +1437,10 @@ class BackendTunnel:
         # Only include maxSpeechTokens if explicitly set (non-zero)
         if max_speech_tokens > 0:
             payload["maxSpeechTokens"] = max_speech_tokens
+        if chunk_mode:
+            payload["chunkMode"] = chunk_mode
+        if manage_history:
+            payload["manageHistory"] = True
 
         await self._send({
             "id": self._generate_message_id(),
@@ -1498,6 +1505,7 @@ class BackendTunnel:
                 "type": "done",
                 "data": {
                     "speech": payload.get("speech", ""),
+                    "chunks": payload.get("chunks"),
                     "thoughts": payload.get("thoughts", ""),
                     "citations": payload.get("citations", []),
                     "verified": payload.get("verified", False),
