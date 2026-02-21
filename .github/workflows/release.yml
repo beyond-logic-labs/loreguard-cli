@@ -20,6 +20,7 @@ jobs:
           - os: ubuntu-latest
             artifact-name: loreguard-linux-amd64
             build-output: dist/loreguard
+            torch-index: https://download.pytorch.org/whl/cpu
 
     runs-on: ${{ matrix.os }}
 
@@ -30,6 +31,10 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Install CPU-only torch (Linux only)
+        if: matrix.torch-index != ''
+        run: pip install torch --index-url ${{ matrix.torch-index }}
 
       - name: Install dependencies
         run: |
