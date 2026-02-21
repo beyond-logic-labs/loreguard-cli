@@ -106,7 +106,18 @@ def get_slot_cache_dir() -> Path:
 
 
 def get_llama_server_path() -> Path:
-    """Get the path to llama-server binary."""
+    """Get the path to llama-server binary.
+
+    ADR-0027: Checks LOREGUARD_LLAMA_SERVER_PATH first for pre-shipped binaries
+    (enterprise bundles), then falls back to the default bin directory.
+    """
+    # Check for pre-shipped binary (enterprise bundle)
+    override = os.environ.get("LOREGUARD_LLAMA_SERVER_PATH", "")
+    if override:
+        p = Path(override)
+        if p.exists() and p.is_file():
+            return p
+
     plat = get_platform()
     binary_name = BINARIES[plat]["binary_name"]
     return get_bin_dir() / binary_name
@@ -129,7 +140,16 @@ def get_installed_version() -> Optional[str]:
 
 
 def is_llama_server_installed() -> bool:
-    """Check if llama-server is installed with the correct version."""
+    """Check if llama-server is installed with the correct version.
+
+    ADR-0027: If LOREGUARD_LLAMA_SERVER_PATH is set and the binary exists,
+    always returns True (pre-shipped binary, skip version check).
+    """
+    # Pre-shipped binary always counts as installed
+    override = os.environ.get("LOREGUARD_LLAMA_SERVER_PATH", "")
+    if override and Path(override).exists():
+        return True
+
     server_path = get_llama_server_path()
     if not (server_path.exists() and server_path.is_file()):
         return False

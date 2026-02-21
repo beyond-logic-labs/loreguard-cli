@@ -240,12 +240,33 @@ class LoreguardCLI:
         try:
             llm_proxy = LLMProxy(f"http://127.0.0.1:{self.port}")
 
+            # ADR-0027: Load all ML services — the client is the sole provider
+            # of NLI, intent, dialogue act, and chunk capabilities.
+            # Use resolve_model_path() to prefer pre-shipped models (enterprise bundles).
+            from .config import resolve_model_path
+
+            # Initialize NLI service (HHEM grounding model)
+            nli_service = None
+            try:
+                from .nli import NLIService
+                nli_model = resolve_model_path("vectara/hallucination_evaluation_model", "hhem")
+                log.info(f"Loading NLI model ({nli_model})...")
+                nli_service = NLIService(model_path=nli_model)
+                if nli_service.load_model():
+                    log.info(f"NLI ready (device: {nli_service.device})")
+                else:
+                    log.warning("NLI model failed to load")
+                    nli_service = None
+            except Exception as e:
+                log.warning(f"NLI error: {e}")
+
             # Initialize intent classifier (ADR-0010)
             intent_classifier = None
             try:
                 from .intent_classifier import IntentClassifier
-                log.info("Loading intent classifier...")
-                intent_classifier = IntentClassifier()
+                intent_model = resolve_model_path("MoritzLaurer/DeBERTa-v3-large-zeroshot-v2.0", "deberta")
+                log.info(f"Loading intent classifier ({intent_model})...")
+                intent_classifier = IntentClassifier(model_path=intent_model)
                 if intent_classifier.load_model():
                     log.info(f"Intent classifier ready (device: {intent_classifier.device})")
                 else:
@@ -253,6 +274,26 @@ class LoreguardCLI:
                     intent_classifier = None
             except Exception as e:
                 log.warning(f"Intent classifier error: {e}")
+
+            # Initialize dialogue act classifier
+            dialogue_act_classifier = None
+            try:
+                from .dialogue_act_classifier import (
+                    DialogueActClassifier,
+                    is_dialogue_act_model_available,
+                )
+                if is_dialogue_act_model_available():
+                    log.info("Loading dialogue act classifier...")
+                    dialogue_act_classifier = DialogueActClassifier()
+                    if dialogue_act_classifier.load_model():
+                        log.info(f"Dialogue act classifier ready (device: {dialogue_act_classifier.device})")
+                    else:
+                        log.warning("Dialogue act classifier failed to load")
+                        dialogue_act_classifier = None
+                else:
+                    log.info("Dialogue act model not available, skipping")
+            except Exception as e:
+                log.warning(f"Dialogue act classifier error: {e}")
 
             # Initialize chunk detector (ADR-0023) - shares model with intent classifier
             chunk_detector = None
@@ -278,7 +319,9 @@ class LoreguardCLI:
                 worker_id=self.worker_id,
                 worker_token=self.token,
                 model_id=self.model_path.stem if self.model_path else "unknown",
+                nli_service=nli_service,
                 intent_classifier=intent_classifier,
+                dialogue_act_classifier=dialogue_act_classifier,
                 chunk_detector=chunk_detector,
             )
 
