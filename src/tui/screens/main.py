@@ -546,11 +546,17 @@ class MainScreen(Screen):
                 intent_classifier = None
 
             # Load dialogue act classifier (filler selection) - run in thread pool
-            self._update_status("Loading dialogue act model...", log=False)
-            self._log("Loading dialogue act classifier...")
             dialogue_act_classifier = None
+            enable_dialogue_act = os.getenv("LOREGUARD_DIALOGUE_ACT_ENABLED", "true").lower() == "true"
+            if not enable_dialogue_act:
+                self._log("Dialogue act classifier disabled via LOREGUARD_DIALOGUE_ACT_ENABLED")
+            else:
+                self._update_status("Loading dialogue act model...", log=False)
+                self._log("Loading dialogue act classifier...")
             try:
-                if is_dialogue_act_model_available():
+                if not enable_dialogue_act:
+                    pass  # Skip loading
+                elif is_dialogue_act_model_available():
                     dialogue_act_classifier = DialogueActClassifier()
                     loop = asyncio.get_event_loop()
                     with concurrent.futures.ThreadPoolExecutor() as pool:
