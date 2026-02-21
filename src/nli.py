@@ -123,6 +123,10 @@ class NLIService:
                     self._model_path,
                     trust_remote_code=True,
                 )
+                # HHEMv2 custom class may lack all_tied_weights_keys (needed by
+                # newer transformers for .to() / .eval()). Patch if missing.
+                if not hasattr(self._model, "_tied_weights_keys"):
+                    self._model._tied_weights_keys = []
                 self._model.to(self._device)
                 self._model.eval()
 
