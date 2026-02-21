@@ -22,6 +22,14 @@ from typing import AsyncGenerator, Callable, Optional
 
 import httpx
 
+
+def _get_templates_dir() -> Path:
+    """Return the templates directory, handling PyInstaller onefile bundles."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / "templates"
+    return Path(__file__).parent.parent / "templates"
+
+
 LLAMA_VERSION = "b7789"  # Must match loreguard-engine bundle version
 
 # Download URLs for each platform
@@ -402,7 +410,7 @@ class LlamaServerProcess:
             # Llama 3.1's built-in template forces tool-calling format even without tools,
             # so we use a stripped-down template that only handles chat messages.
             "--jinja",
-            "--chat-template-file", str(Path(__file__).parent.parent / "templates" / "llama31-no-tools.jinja"),
+            "--chat-template-file", str(_get_templates_dir() / "llama31-no-tools.jinja"),
         ]
 
         # Add LoRA adapter if specified

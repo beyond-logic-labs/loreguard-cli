@@ -797,8 +797,8 @@ class LLMProxy:
             safe_filename = self._validate_cache_filename(filename)
 
             response = await self.client.post(
-                f"{self.endpoint}/slots/{slot_id}?action=save&filename={safe_filename}",
-                json={},  # llama-server expects JSON body
+                f"{self.endpoint}/slots/{slot_id}?action=save",
+                json={"filename": safe_filename},
                 timeout=30.0,
             )
             if response.status_code == 200:
@@ -889,8 +889,8 @@ class LLMProxy:
             safe_filename = self._validate_cache_filename(filename)
 
             response = await self.client.post(
-                f"{self.endpoint}/slots/{slot_id}?action=restore&filename={safe_filename}",
-                json={},  # llama-server expects JSON body
+                f"{self.endpoint}/slots/{slot_id}?action=restore",
+                json={"filename": safe_filename},
                 timeout=30.0,
             )
             if response.status_code == 200:

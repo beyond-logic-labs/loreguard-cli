@@ -161,17 +161,69 @@ def load_config() -> dict:
         # Pre-shipped llama-server binary path (enterprise bundles).
         # When set, skips auto-download and uses this binary directly.
         "LLAMA_SERVER_PATH": os.getenv("LOREGUARD_LLAMA_SERVER_PATH", ""),
+
+        # Bundle directory (set by game launchers that ship a loreguard bundle).
+        # When set, the client auto-discovers models from manifest.txt inside the bundle.
+        # This is the single env var a game needs to set — no per-model configuration required.
+        "BUNDLE_DIR": os.getenv("LOREGUARD_BUNDLE_DIR", ""),
     }
+
+
+def get_bundle_dir() -> Optional[Path]:
+    """Get the loreguard bundle directory, if configured via LOREGUARD_BUNDLE_DIR.
+
+    Game launchers set this to the bundle root so the client can auto-discover
+    models from manifest.txt without any per-model configuration.
+    """
+    bundle_dir = get_config_value("BUNDLE_DIR")
+    if bundle_dir:
+        path = Path(bundle_dir)
+        if path.exists() and path.is_dir():
+            return path
+    return None
+
+
+def get_bundle_manifest() -> dict:
+    """Parse the bundle's manifest.txt into a logical-name → dir-name mapping.
+
+    Returns an empty dict if no bundle dir is configured or manifest is missing.
+
+    Manifest format:
+        nli=vectara--hallucination_evaluation_model
+        embedding=BAAI--bge-small-en-v1.5
+        reranker=cross-encoder--ms-marco-MiniLM-L-6-v2
+    """
+    bundle_dir = get_bundle_dir()
+    if not bundle_dir:
+        return {}
+    manifest_path = bundle_dir / "models" / "manifest.txt"
+    if not manifest_path.exists():
+        return {}
+    result = {}
+    for line in manifest_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            key, _, value = line.partition("=")
+            result[key.strip()] = value.strip()
+    return result
 
 
 def get_models_dir() -> Optional[Path]:
     """Get the pre-shipped models directory, if configured (ADR-0027).
 
-    Returns None if not set, meaning models should be auto-downloaded from HF.
+    Checks LOREGUARD_MODELS_DIR first, then falls back to the bundle's models dir.
+    Returns None if neither is set, meaning models should be auto-downloaded from HF.
     """
     models_dir = get_config_value("MODELS_DIR")
     if models_dir:
         path = Path(models_dir)
+        if path.exists() and path.is_dir():
+            return path
+    bundle_dir = get_bundle_dir()
+    if bundle_dir:
+        path = bundle_dir / "models"
         if path.exists() and path.is_dir():
             return path
     return None
@@ -180,6 +232,12 @@ def get_models_dir() -> Optional[Path]:
 def resolve_model_path(model_name: str, subdir: str = "") -> str:
     """Resolve a model path, preferring pre-shipped models over HF downloads.
 
+    Resolution order:
+    1. LOREGUARD_MODELS_DIR/<subdir>  (explicit override)
+    2. Bundle models dir using manifest.txt  (HF name → manifest key → local dir)
+    3. Bundle models dir using HF name → org--model convention  (fallback)
+    4. Original HF model name  (download from HuggingFace)
+
     Args:
         model_name: HuggingFace model name (e.g., 'vectara/hallucination_evaluation_model')
         subdir: Subdirectory within MODELS_DIR to check (e.g., 'hhem', 'deberta')
@@ -187,11 +245,34 @@ def resolve_model_path(model_name: str, subdir: str = "") -> str:
     Returns:
         Local path if pre-shipped model found, otherwise the original HF model name.
     """
-    models_dir = get_models_dir()
-    if models_dir and subdir:
-        local_path = models_dir / subdir
+    # 1. Explicit LOREGUARD_MODELS_DIR/<subdir>
+    explicit_dir = get_config_value("MODELS_DIR")
+    if explicit_dir and subdir:
+        local_path = Path(explicit_dir) / subdir
         if local_path.exists() and any(local_path.iterdir()):
             return str(local_path)
+
+    # 2 & 3. Bundle directory resolution
+    bundle_dir = get_bundle_dir()
+    if bundle_dir:
+        bundle_models = bundle_dir / "models"
+
+        # Try manifest.txt: find the dir name for this HF model name
+        manifest = get_bundle_manifest()
+        # The manifest uses org--model naming (/ replaced by --)
+        hf_as_dir = model_name.replace("/", "--")
+        for _key, dir_name in manifest.items():
+            if dir_name == hf_as_dir:
+                local_path = bundle_models / dir_name
+                if local_path.exists() and any(local_path.iterdir()):
+                    return str(local_path)
+                break
+
+        # Fallback: check bundle models dir using org--model convention directly
+        local_path = bundle_models / hf_as_dir
+        if local_path.exists() and any(local_path.iterdir()):
+            return str(local_path)
+
     return model_name
 
 

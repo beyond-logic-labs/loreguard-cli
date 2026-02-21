@@ -36,6 +36,8 @@ def main():
         "--clean",
         # Add src to path so imports work
         "--paths", ".",
+        # Include templates directory (jinja chat templates for llama-server)
+        "--add-data", "templates:templates",
         # Collect all src submodules
         "--collect-submodules", "src",
         # Add hidden imports that PyInstaller might miss

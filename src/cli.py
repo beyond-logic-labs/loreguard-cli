@@ -52,8 +52,11 @@ class LoreguardCLI:
         self.model_id = model_id
         self.port = port
         self.backend_url = backend_url
-        # Worker ID: use provided value, or default to hostname
-        self.worker_id = worker_id or socket.gethostname() or "worker"
+        # Worker ID: use provided value, or default to sanitized hostname.
+        # Validator requires ^[a-zA-Z0-9_-]{1,64}$ — replace dots with hyphens.
+        raw_id = worker_id or socket.gethostname() or "worker"
+        import re
+        self.worker_id = re.sub(r'[^a-zA-Z0-9_-]', '-', raw_id)[:64]
 
         self._llama = None
         self._tunnel = None
@@ -275,25 +278,8 @@ class LoreguardCLI:
             except Exception as e:
                 log.warning(f"Intent classifier error: {e}")
 
-            # Initialize dialogue act classifier
+            # Dialogue act classifier disabled
             dialogue_act_classifier = None
-            try:
-                from .dialogue_act_classifier import (
-                    DialogueActClassifier,
-                    is_dialogue_act_model_available,
-                )
-                if is_dialogue_act_model_available():
-                    log.info("Loading dialogue act classifier...")
-                    dialogue_act_classifier = DialogueActClassifier()
-                    if dialogue_act_classifier.load_model():
-                        log.info(f"Dialogue act classifier ready (device: {dialogue_act_classifier.device})")
-                    else:
-                        log.warning("Dialogue act classifier failed to load")
-                        dialogue_act_classifier = None
-                else:
-                    log.info("Dialogue act model not available, skipping")
-            except Exception as e:
-                log.warning(f"Dialogue act classifier error: {e}")
 
             # Initialize chunk detector (ADR-0023) - shares model with intent classifier
             chunk_detector = None
@@ -470,6 +456,11 @@ Available model IDs:
         help="Enable debug logging and show pipeline pass updates (in wizard mode)",
     )
     parser.add_argument(
+        "--bundle-dir",
+        default=os.getenv("LOREGUARD_BUNDLE_DIR", ""),
+        help="Loreguard bundle directory. Auto-discovers models from manifest.txt.",
+    )
+    parser.add_argument(
         "--dev",
         action="store_true",
         help="Dev mode - skip backend connection, just run llama-server",
@@ -484,6 +475,10 @@ Available model IDs:
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
+
+    # Propagate --bundle-dir to env so config.py picks it up via get_bundle_dir()
+    if args.bundle_dir:
+        os.environ["LOREGUARD_BUNDLE_DIR"] = args.bundle_dir
 
     # Chat mode - test NPC chat directly via API (no model needed)
     if args.chat:
@@ -509,8 +504,17 @@ Available model IDs:
         args.token = "dev_mock_token"
         log.info("Running in DEV MODE - no backend connection")
     else:
-        # Validate token is present (server will validate format)
-        if not args.token:
+        # Local bundle backends (ws:// to localhost/127.0.0.1) run with RequireAuth=false,
+        # so any non-empty token is accepted. Only require a real token for cloud backends.
+        backend = args.backend
+        is_local_backend = (
+            backend.startswith("ws://") and
+            any(backend.startswith(f"ws://{h}") for h in ("localhost", "127.0.0.1", "[::1]"))
+        )
+        if not args.token and is_local_backend:
+            # Local bundle backends run with RequireAuth=false — any non-empty token works.
+            args.token = "local"
+        elif not args.token:
             log.error("Token required. Use --token or set LOREGUARD_TOKEN (or use --dev)")
             sys.exit(1)
 
