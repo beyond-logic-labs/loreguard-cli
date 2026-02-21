@@ -52,8 +52,8 @@ def main():
         "--hidden-import", "websockets",
         "--hidden-import", "aiofiles",
         "--hidden-import", "pydantic",
-        # Entry point - unified command
-        "src/__main__.py",
+        # Top-level entry point — wraps src package so relative imports work
+        "loreguard_entry.py",
     ]
 
     # Add icon on Windows/macOS
