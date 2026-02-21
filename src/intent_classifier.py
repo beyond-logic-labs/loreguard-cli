@@ -1,4 +1,4 @@
-"""Intent Classification service for adaptive retrieval (ADR-0010).
+ """Intent Classification service for adaptive retrieval (ADR-0010).
 
 This module provides zero-shot intent classification for the NPC dialogue pipeline.
 It uses DeBERTa-v3-large-zeroshot to classify user messages into retrieval strategy categories:
@@ -40,16 +40,28 @@ class IntentResult:
 # DeBERTa-v3-large is state-of-the-art for zero-shot classification
 DEFAULT_INTENT_MODEL = "MoritzLaurer/DeBERTa-v3-large-zeroshot-v2.0"
 
-# Intent hypothesis templates for zero-shot classification
-# Each intent maps to a hypothesis that DeBERTa will evaluate
-# NOTE: Hypotheses must be specific to avoid misclassification of mixed-intent messages
-# (e.g., "hey, how are you? what's the ISP fee?" should match LIGHT_RETRIEVAL, not WORKING_MEMORY)
-# TODO: Move hypotheses to backend for centralized control (see loreguard-engine issue)
-INTENT_HYPOTHESES = {
-    IntentLabel.NO_RETRIEVAL: "This is a greeting, farewell, or a vague question about availability without asking for any specific information.",
-    IntentLabel.WORKING_MEMORY: "This asks about the person's current life, recent experiences, what they've been up to, or how things are going for them.",
-    IntentLabel.LIGHT_RETRIEVAL: "This asks for a specific fact, number, price, fee, date, location, or procedure that requires looking up information.",
-    IntentLabel.FULL_RETRIEVAL: "This is a complex question requiring analysis of multiple topics or understanding relationships between different pieces of information.",
+# Intent label descriptions for zero-shot classification.
+# Keep these mutually exclusive and concrete to reduce confusion between:
+# - social greetings vs factual requests
+# - working-memory questions vs retrieval questions
+INTENT_LABEL_DESCRIPTIONS = {
+    IntentLabel.NO_RETRIEVAL: (
+        "a greeting, acknowledgement, farewell, or social small talk "
+        "(examples: hi, hello, hey, yo, thanks, okay, bye) without asking "
+        "for specific factual information"
+    ),
+    IntentLabel.WORKING_MEMORY: (
+        "a question about the NPC's own current state, feelings, recent "
+        "experiences, or personal memory that can be answered from working memory"
+    ),
+    IntentLabel.LIGHT_RETRIEVAL: (
+        "a request for one specific factual detail (number, fee, date, name, "
+        "location, status, or single-file fact) that needs light retrieval"
+    ),
+    IntentLabel.FULL_RETRIEVAL: (
+        "a complex request requiring multiple facts, synthesis, planning, "
+        "comparison, or multi-step reasoning across sources"
+    ),
 }
 
 # Promise detection hypothesis for follow-up triggers (ADR-0020)
@@ -156,32 +168,35 @@ class IntentClassifier:
 
         start_time = time.time()
 
-        # Get candidate labels and hypotheses
-        labels = list(INTENT_HYPOTHESES.keys())
-        hypotheses = list(INTENT_HYPOTHESES.values())
+        # Candidate labels are descriptive intent classes.
+        candidate_labels = list(INTENT_LABEL_DESCRIPTIONS.values())
 
-        # Run zero-shot classification
-        # The pipeline will evaluate each hypothesis against the query
+        # Run zero-shot classification.
+        # Using a consistent hypothesis template tends to be more stable than
+        # passing full natural-language hypotheses as labels.
         result = self._classifier(
             query,
-            candidate_labels=hypotheses,
-            hypothesis_template="{}",  # Use hypotheses directly
+            candidate_labels=candidate_labels,
+            hypothesis_template="This user message is {}.",
             multi_label=False,
         )
 
         latency_ms = int((time.time() - start_time) * 1000)
 
-        # Map the winning hypothesis back to intent label
-        winning_hypothesis = result["labels"][0]
+        # Map the winning description back to intent label
+        winning_description = result["labels"][0]
         confidence = result["scores"][0]
 
-        # Find the intent that corresponds to the winning hypothesis
+        # Find the intent that corresponds to the winning description
         intent = IntentLabel.FULL_RETRIEVAL  # Default
-        for label, hypothesis in INTENT_HYPOTHESES.items():
-            if hypothesis == winning_hypothesis:
+        for label, description in INTENT_LABEL_DESCRIPTIONS.items():
+            if description == winning_description:
                 intent = label
                 break
 
+        # Log full score distribution for tuning/debugging.
+        label_score_pairs = list(zip(result["labels"], result["scores"]))
+        logger.debug("Intent score distribution: %s", label_score_pairs)
         logger.info(f"Intent classification: {intent.value} (confidence={confidence:.2f}, latency={latency_ms}ms)")
 
         return IntentResult(
