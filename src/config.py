@@ -152,7 +152,47 @@ def load_config() -> dict:
 
         # Context compaction: if True, truncate old messages instead of erroring
         "CONTEXT_COMPACTION": os.getenv("CONTEXT_COMPACTION", "true").lower() == "true",
+
+        # ADR-0027: Pre-shipped models directory for enterprise bundles.
+        # When set, model loaders check this directory first before downloading from HF.
+        # Expected subdirectories: hhem/, deberta/, distilbert/, llm/
+        "MODELS_DIR": os.getenv("LOREGUARD_MODELS_DIR", ""),
+
+        # Pre-shipped llama-server binary path (enterprise bundles).
+        # When set, skips auto-download and uses this binary directly.
+        "LLAMA_SERVER_PATH": os.getenv("LOREGUARD_LLAMA_SERVER_PATH", ""),
     }
+
+
+def get_models_dir() -> Optional[Path]:
+    """Get the pre-shipped models directory, if configured (ADR-0027).
+
+    Returns None if not set, meaning models should be auto-downloaded from HF.
+    """
+    models_dir = get_config_value("MODELS_DIR")
+    if models_dir:
+        path = Path(models_dir)
+        if path.exists() and path.is_dir():
+            return path
+    return None
+
+
+def resolve_model_path(model_name: str, subdir: str = "") -> str:
+    """Resolve a model path, preferring pre-shipped models over HF downloads.
+
+    Args:
+        model_name: HuggingFace model name (e.g., 'vectara/hallucination_evaluation_model')
+        subdir: Subdirectory within MODELS_DIR to check (e.g., 'hhem', 'deberta')
+
+    Returns:
+        Local path if pre-shipped model found, otherwise the original HF model name.
+    """
+    models_dir = get_models_dir()
+    if models_dir and subdir:
+        local_path = models_dir / subdir
+        if local_path.exists() and any(local_path.iterdir()):
+            return str(local_path)
+    return model_name
 
 
 def get_config_value(key: str, default: Optional[str] = None) -> Optional[str]:

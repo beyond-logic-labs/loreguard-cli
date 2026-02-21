@@ -5,6 +5,7 @@ from rich.text import Text
 from rich.style import Style
 
 from ..styles import FG_DIM, PINK
+from ...runtime import get_version
 
 # Simple stylized logo
 LOGO = r"""
@@ -43,9 +44,9 @@ class LoreguardBanner(Static):
     }
     """
 
-    def __init__(self, version: str = "0.11.0") -> None:
+    def __init__(self, version: str = None) -> None:
         super().__init__()
-        self._version = version
+        self._version = version or get_version()
 
     def render(self) -> Text:
         """Render minimal banner."""

@@ -31,7 +31,7 @@ from rich.console import Console
 
 from .tunnel import BackendTunnel
 from .llm import LLMProxy
-from .config import get_config_value
+from .config import get_config_value, resolve_model_path
 from .nli import NLIService, is_nli_model_available
 from .intent_classifier import IntentClassifier, is_intent_model_available
 from .dialogue_act_classifier import (
@@ -91,7 +91,8 @@ async def startup():
     enable_nli = os.getenv("LOREGUARD_NLI_ENABLED", "true").lower() == "true"
     if enable_nli:
         console.print("[cyan]Initializing NLI service...[/cyan]")
-        nli_service = NLIService()
+        nli_model = resolve_model_path("vectara/hallucination_evaluation_model", "hhem")
+        nli_service = NLIService(model_path=nli_model)
         if nli_service.load_model():
             console.print(f"[green]NLI service ready (device: {nli_service.device})[/green]")
         else:
@@ -105,7 +106,8 @@ async def startup():
     enable_intent = os.getenv("LOREGUARD_INTENT_ENABLED", "true").lower() == "true"
     if enable_intent:
         console.print("[cyan]Initializing intent classifier...[/cyan]")
-        intent_classifier = IntentClassifier()
+        intent_model = resolve_model_path("MoritzLaurer/DeBERTa-v3-large-zeroshot-v2.0", "deberta")
+        intent_classifier = IntentClassifier(model_path=intent_model)
         if intent_classifier.load_model():
             console.print(f"[green]Intent classifier ready (device: {intent_classifier.device})[/green]")
         else:

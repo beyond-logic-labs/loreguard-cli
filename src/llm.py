@@ -572,25 +572,26 @@ class LLMProxy:
             payload["enable_thinking"] = False
 
         # Force JSON output if requested
-        # Use json_object type with schema field - this is supported in llama.cpp server
-        # (server-common.cpp extracts schema from response_format.schema for json_object type)
-        # Note: json_schema type has a bug (issue #10732, PR #18963 pending)
         if req.force_json:
-            # Merge system prompt into user message for "Content-only" template
-            if len(req.messages) >= 2 and req.messages[0].get("role") == "system":
-                system_content = req.messages[0]["content"]
-                user_content = req.messages[-1]["content"]
-                merged = f"INSTRUCTIONS:\n{system_content}\n\nREQUEST:\n{user_content}"
-                payload["messages"] = [{"role": "user", "content": merged}]
-                logger.debug("JSON MODE: Merged system into user message")
-
-            # Use json_object with schema for proper constraint enforcement
             if req.json_schema:
-                payload["response_format"] = {"type": "json_object", "schema": req.json_schema}
-                logger.info(f"JSON MODE: response_format=json_object with schema")
+                # Use top-level json_schema field for grammar-constrained JSON.
+                # This bypasses the chat template (which corrupts schemas on Llama 3.1
+                # by routing them through function-calling) and goes directly to GBNF
+                # grammar conversion.
+                payload["json_schema"] = req.json_schema
+                logger.info("JSON MODE: top-level json_schema for grammar constraint")
             else:
+                # Generic JSON object mode (no schema constraint).
+                # response_format changes chat template to "Content-only" which loses
+                # system prompt context, so merge system into user message.
+                if len(req.messages) >= 2 and req.messages[0].get("role") == "system":
+                    system_content = req.messages[0]["content"]
+                    user_content = req.messages[-1]["content"]
+                    merged = f"INSTRUCTIONS:\n{system_content}\n\nREQUEST:\n{user_content}"
+                    payload["messages"] = [{"role": "user", "content": merged}]
+                    logger.debug("JSON MODE: Merged system into user message")
                 payload["response_format"] = {"type": "json_object"}
-                logger.info(f"JSON MODE: response_format=json_object (no schema)")
+                logger.info("JSON MODE: response_format=json_object (no schema)")
 
         # Use per-request timeout if specified
         timeout = req.timeout or self.default_timeout

@@ -1,12 +1,18 @@
-"""Embedded HTTP server for game SDK connections.
+"""Embedded HTTP server for game SDK connections (ADR-0027).
 
-This module provides a lightweight HTTP server that can be started
-alongside the TUI or CLI to handle game client requests via SSE.
+This module provides the official SDK HTTP interface for games to interact
+with loreguard. Games discover this server via runtime.json and call its
+HTTP endpoints:
+
+  GET  /health            - Health check with backend connection status
+  GET  /api/capabilities  - Feature discovery (streaming, chunk modes)
+  GET  /api/characters    - List available NPCs (proxied from engine)
+  POST /api/chat          - Chat with an NPC (streaming SSE or JSON)
 
 The server shares the existing tunnel connection instead of creating
-a new one, ensuring a single WebSocket connection per player.
+a new one, ensuring a single WebSocket connection per worker.
 
-Uses hypercorn with socket-first binding for race-condition-free port allocation.
+Uses uvicorn with socket-first binding for race-condition-free port allocation.
 """
 
 import asyncio
@@ -266,6 +272,8 @@ class EmbeddedHTTPServer:
                         "verified": data.get("verified", False),
                         "citations": data.get("citations", []),
                     }
+                    if data.get("chunks"):
+                        result["chunks"] = data["chunks"]
                     if pipeline_trace:
                         result["pipeline_trace"] = pipeline_trace
                     return result
@@ -313,14 +321,76 @@ class EmbeddedHTTPServer:
         async def health():
             try:
                 backend_connected = server.tunnel.connected if server.tunnel else False
-                return {
+                result = {
                     "status": "ok",
                     "backend_connected": backend_connected,
                 }
+                # Include capabilities for game clients to check readiness
+                if server.tunnel and hasattr(server.tunnel, "capabilities"):
+                    result["capabilities"] = server.tunnel.capabilities
+                return result
             except Exception as e:
                 return JSONResponse(
                     status_code=500,
                     content={"status": "error", "error": str(e)},
+                )
+
+        @app.get("/api/capabilities")
+        async def capabilities():
+            caps = {
+                "streaming": True,
+                "chunk_modes": ["sentence"],
+                "manages_history": False,
+            }
+            if server.tunnel:
+                if getattr(server.tunnel, "chunk_detector", None) and server.tunnel.chunk_detector.is_loaded:
+                    caps["chunk_modes"].append("deberta")
+            return caps
+
+        @app.get("/api/characters")
+        async def characters(request: Request):
+            """Proxy character listing from the engine (ADR-0027).
+
+            Games discover NPCs through the client SDK, not by calling the engine directly.
+            """
+            if not server.tunnel or not server.tunnel.connected:
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": "Not connected to backend. Start the engine first."},
+                )
+
+            # Derive HTTP base URL from WebSocket URL
+            # ws://localhost:8090/workers → http://localhost:8090
+            # wss://api.loreguard.com/workers → https://api.loreguard.com
+            backend_ws = server.tunnel.backend_url
+            if backend_ws.startswith("wss://"):
+                base_url = "https://" + backend_ws[6:].split("/")[0]
+            elif backend_ws.startswith("ws://"):
+                base_url = "http://" + backend_ws[5:].split("/")[0]
+            else:
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": f"Cannot derive HTTP URL from backend: {backend_ws}"},
+                )
+
+            try:
+                import httpx
+                # Forward Authorization header if present
+                headers = {}
+                auth_header = request.headers.get("authorization", "")
+                if auth_header:
+                    headers["Authorization"] = auth_header
+
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(f"{base_url}/api/characters", headers=headers)
+                    return JSONResponse(
+                        status_code=resp.status_code,
+                        content=resp.json(),
+                    )
+            except Exception as e:
+                return JSONResponse(
+                    status_code=502,
+                    content={"error": f"Failed to reach engine: {e}"},
                 )
 
         @app.post("/api/chat")
@@ -340,6 +410,8 @@ class EmbeddedHTTPServer:
             scenario_id = body.get("scenario_id", body.get("scenarioId", ""))
             enable_thinking = body.get("enable_thinking", body.get("enableThinking", False))
             max_speech_tokens = body.get("max_speech_tokens", body.get("maxSpeechTokens", 0))
+            chunk_mode = body.get("chunk_mode", body.get("chunkMode", ""))
+            manage_history = body.get("manage_history", body.get("manageHistory", False))
             accept = request.headers.get("accept", "")
             streaming = "text/event-stream" in accept
 
@@ -366,6 +438,8 @@ class EmbeddedHTTPServer:
                             verbose=body.get("verbose", False),
                             api_token=api_token,
                             max_speech_tokens=max_speech_tokens,
+                            chunk_mode=chunk_mode,
+                            manage_history=manage_history,
                         )
                     )
                     # Wait for the result
@@ -389,6 +463,8 @@ class EmbeddedHTTPServer:
                     verbose=body.get("verbose", False),
                     api_token=api_token,
                     max_speech_tokens=max_speech_tokens,
+                    chunk_mode=chunk_mode,
+                    manage_history=manage_history,
                 )
 
             if streaming:

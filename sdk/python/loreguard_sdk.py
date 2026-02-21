@@ -145,7 +145,12 @@ async def chat(
     character_id: str,
     message: str,
     player_handle: str = "",
+    player_id: str = "",
     current_context: str = "",
+    history: list[dict[str, Any]] | None = None,
+    chunk_mode: str = "",
+    manage_history: bool = False,
+    max_speech_tokens: int = 0,
     stream: bool = True,
 ) -> AsyncIterator[dict[str, Any]]:
     """Chat with an NPC via loreguard-client.
@@ -154,12 +159,17 @@ async def chat(
         character_id: The NPC's ID
         message: Player's message to the NPC
         player_handle: Player's display name (optional)
+        player_id: Player's unique ID for per-player state (optional)
         current_context: Game context like "in a dark cave" (optional)
+        history: Conversation history as [{"role": "user"|"assistant", "content": "..."}] (optional)
+        chunk_mode: Chunk detection mode — "deberta" for ML-based, "" for none (optional)
+        manage_history: If True, bundle manages history internally per character+player (optional)
+        max_speech_tokens: Max tokens in NPC speech (optional, 0 = default)
         stream: If True, yields tokens as they arrive. If False, yields final response.
 
     Yields:
         For streaming: {"t": "token"} for each token, then {"speech": "...", "verified": True, ...}
-        For non-streaming: Single dict with complete response
+        For non-streaming: Single dict with complete response (includes "chunks" if chunk_mode set)
 
     Raises:
         RuntimeError: If loreguard-client is not running
@@ -181,12 +191,22 @@ async def chat(
     if stream:
         headers["Accept"] = "text/event-stream"
 
-    body = {
+    body: dict[str, Any] = {
         "character_id": character_id,
         "message": message,
         "player_handle": player_handle,
         "current_context": current_context,
     }
+    if player_id:
+        body["player_id"] = player_id
+    if history:
+        body["history"] = history
+    if chunk_mode:
+        body["chunk_mode"] = chunk_mode
+    if manage_history:
+        body["manage_history"] = True
+    if max_speech_tokens > 0:
+        body["max_speech_tokens"] = max_speech_tokens
 
     async with httpx.AsyncClient() as client:
         if stream:
@@ -214,6 +234,26 @@ async def chat(
             yield response.json()
 
 
+async def get_capabilities() -> dict[str, Any]:
+    """Get bundle capabilities.
+
+    Returns:
+        Capabilities dict with streaming, chunk_modes, manages_history.
+
+    Raises:
+        RuntimeError: If loreguard-client is not running
+        ImportError: If httpx is not installed
+    """
+    if httpx is None:
+        raise ImportError("httpx is required. Install with: pip install httpx")
+
+    url = f"{get_base_url()}/api/capabilities"
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, timeout=5.0)
+        response.raise_for_status()
+        return response.json()
+
+
 async def health_check() -> dict[str, Any]:
     """Check loreguard-client health.
 
@@ -239,7 +279,12 @@ def chat_sync(
     character_id: str,
     message: str,
     player_handle: str = "",
+    player_id: str = "",
     current_context: str = "",
+    history: list[dict[str, Any]] | None = None,
+    chunk_mode: str = "",
+    manage_history: bool = False,
+    max_speech_tokens: int = 0,
 ) -> dict[str, Any]:
     """Synchronous chat (non-streaming).
 
@@ -247,17 +292,28 @@ def chat_sync(
 
     Returns:
         Complete response dict with speech, verified, citations, etc.
+        Includes "chunks" list if chunk_mode was set.
     """
     if httpx is None:
         raise ImportError("httpx is required. Install with: pip install httpx")
 
     url = f"{get_base_url()}/api/chat"
-    body = {
+    body: dict[str, Any] = {
         "character_id": character_id,
         "message": message,
         "player_handle": player_handle,
         "current_context": current_context,
     }
+    if player_id:
+        body["player_id"] = player_id
+    if history:
+        body["history"] = history
+    if chunk_mode:
+        body["chunk_mode"] = chunk_mode
+    if manage_history:
+        body["manage_history"] = True
+    if max_speech_tokens > 0:
+        body["max_speech_tokens"] = max_speech_tokens
 
     with httpx.Client() as client:
         response = client.post(url, json=body, timeout=120.0)
