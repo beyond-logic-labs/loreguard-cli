@@ -52,58 +52,44 @@ class AdapterInfo:
 
 
 # Supported models for NPC inference
-# Fine-tuned Loreguard models with multi-pass pipeline training
-# Based on unsloth/Llama-3.1-8B-Instruct with Unsloth Dynamic (UD) quantization
-# UD = per-layer optimized quantization for better accuracy at same VRAM
+# Fine-tuned Loreguard NPC model based on Llama 3.1 8B Instruct
+# https://huggingface.co/beyond-logic-labs/loreguard-npc-llama3.1-8b-gguf
 # Ordered by recommendation (best first)
 SUPPORTED_MODELS: list[ModelInfo] = [
-    # GGUF models with Unsloth Dynamic quantization (cross-platform, uses llama-server)
     ModelInfo(
-        id="loreguard-vanilla-ud-q6k",
-        name="Loreguard Vanilla UD Q6_K",
-        filename="loreguard-vanilla-UD-Q6_K.gguf",
-        size_gb=6.6,
-        size_bytes=7_085_559_072,
+        id="loreguard-npc-q6k",
+        name="Loreguard NPC Llama 3.1 8B Q6_K",
+        filename="loreguard-npc-llama3.1-8b-Q6_K.gguf",
+        size_gb=6.1,
+        size_bytes=6_596_010_976,
         context_length=8192,
-        url=f"https://huggingface.co/{HF_ORG}/loreguard-vanilla-gguf/resolve/main/loreguard-vanilla-UD-Q6_K.gguf",
+        url=f"https://huggingface.co/{HF_ORG}/loreguard-npc-llama3.1-8b-gguf/resolve/main/loreguard-npc-llama3.1-8b-Q6_K.gguf",
         description="Recommended. Best quality/size balance.",
         hardware="12GB RAM • 8GB VRAM",
         recommended=True,
     ),
     ModelInfo(
-        id="loreguard-vanilla-ud-q5km",
-        name="Loreguard Vanilla UD Q5_K_M",
-        filename="loreguard-vanilla-UD-Q5_K_M.gguf",
-        size_gb=5.7,
-        size_bytes=6_145_035_552,
+        id="loreguard-npc-q8",
+        name="Loreguard NPC Llama 3.1 8B Q8_0",
+        filename="loreguard-npc-llama3.1-8b-Q8_0.gguf",
+        size_gb=7.9,
+        size_bytes=8_540_775_392,
         context_length=8192,
-        url=f"https://huggingface.co/{HF_ORG}/loreguard-vanilla-gguf/resolve/main/loreguard-vanilla-UD-Q5_K_M.gguf",
-        description="Good quality, smaller size.",
-        hardware="10GB RAM • 6-8GB VRAM",
-        recommended=False,
-    ),
-    ModelInfo(
-        id="loreguard-vanilla-ud-q4km",
-        name="Loreguard Vanilla UD Q4_K_M",
-        filename="loreguard-vanilla-UD-Q4_K_M.gguf",
-        size_gb=4.9,
-        size_bytes=5_282_912_544,
-        context_length=8192,
-        url=f"https://huggingface.co/{HF_ORG}/loreguard-vanilla-gguf/resolve/main/loreguard-vanilla-UD-Q4_K_M.gguf",
-        description="Best for 6GB VRAM. Smallest size.",
-        hardware="8GB RAM • 6GB VRAM",
-        recommended=False,
-    ),
-    ModelInfo(
-        id="loreguard-vanilla-ud-q8",
-        name="Loreguard Vanilla UD Q8_0",
-        filename="loreguard-vanilla-UD-Q8_0.gguf",
-        size_gb=8.5,
-        size_bytes=9_177_550_624,
-        context_length=8192,
-        url=f"https://huggingface.co/{HF_ORG}/loreguard-vanilla-gguf/resolve/main/loreguard-vanilla-UD-Q8_0.gguf",
+        url=f"https://huggingface.co/{HF_ORG}/loreguard-npc-llama3.1-8b-gguf/resolve/main/loreguard-npc-llama3.1-8b-Q8_0.gguf",
         description="Maximum quality. Requires more VRAM.",
         hardware="16GB RAM • 12GB VRAM",
+        recommended=False,
+    ),
+    ModelInfo(
+        id="loreguard-npc-f16",
+        name="Loreguard NPC Llama 3.1 8B F16",
+        filename="loreguard-npc-llama3.1-8b-f16.gguf",
+        size_gb=14.9,
+        size_bytes=16_068_895_712,
+        context_length=8192,
+        url=f"https://huggingface.co/{HF_ORG}/loreguard-npc-llama3.1-8b-gguf/resolve/main/loreguard-npc-llama3.1-8b-f16.gguf",
+        description="Full precision. Research/fine-tuning use.",
+        hardware="32GB RAM • 20GB VRAM",
         recommended=False,
     ),
 ]
