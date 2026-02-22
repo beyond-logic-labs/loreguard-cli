@@ -289,6 +289,7 @@ class LLMProxy:
         token_index = 0
         usage = {}
         line_count = 0  # Track SSE lines for debugging
+        final_finish_reason = None
 
         try:
             # Use a custom timeout for streaming:
@@ -355,6 +356,8 @@ class LLMProxy:
 
                     # Check for finish_reason
                     finish_reason = choices[0].get("finish_reason")
+                    if finish_reason:
+                        final_finish_reason = finish_reason
 
                     # Extract usage if present (some servers send it with final chunk)
                     if "usage" in chunk_data:
@@ -402,6 +405,7 @@ class LLMProxy:
             "usage": usage,
             "model": req.model,
             "token_count": token_index,
+            "finish_reason": final_finish_reason,
         }
 
     def _validate_messages(self, messages: list[dict]) -> list[dict]:
@@ -641,6 +645,7 @@ class LLMProxy:
             "thinking": thinking,
             "model": data.get("model", req.model),
             "usage": data.get("usage", {}),
+            "finish_reason": data["choices"][0].get("finish_reason"),
         }
 
     def _extract_thinking(self, content: str) -> tuple[str, str]:

@@ -119,14 +119,14 @@ class NLIService:
             logger.info(f"Loading NLI model: {self._model_path} (device={self._device})")
 
             if self._use_hhem:
+                # HHEMv2 custom class (built for transformers 4.39) lacks
+                # all_tied_weights_keys required by transformers 5.x.
+                # Patch the vendored modeling file before loading.
+                self._patch_hhem_model_file()
                 self._model = AutoModelForSequenceClassification.from_pretrained(
                     self._model_path,
                     trust_remote_code=True,
                 )
-                # HHEMv2 custom class may lack all_tied_weights_keys (needed by
-                # newer transformers for .to() / .eval()). Patch if missing.
-                if not hasattr(self._model, "_tied_weights_keys"):
-                    self._model._tied_weights_keys = []
                 self._model.to(self._device)
                 self._model.eval()
 
@@ -327,6 +327,40 @@ class NLIService:
                 ))
 
             return results
+
+    def _patch_hhem_model_file(self):
+        """Patch vendored modeling_hhem_v2.py for transformers 5.x compatibility.
+
+        The HHEM model was built for transformers 4.39. Transformers 5.x requires
+        `all_tied_weights_keys` during PreTrainedModel.__init__(), which the
+        custom class doesn't define. Since trust_remote_code loads the .py file
+        directly, we patch the file before from_pretrained reads it.
+        """
+        model_file = os.path.join(self._model_path, "modeling_hhem_v2.py")
+        if not os.path.exists(model_file):
+            return
+
+        try:
+            content = open(model_file, "r").read()
+            if "all_tied_weights_keys" in content:
+                return  # Already patched
+
+            # Add the missing attribute as a class variable
+            patched = content.replace(
+                "class HHEMv2ForSequenceClassification(PreTrainedModel):\n"
+                "    config_class = HHEMv2Config",
+                "class HHEMv2ForSequenceClassification(PreTrainedModel):\n"
+                "    config_class = HHEMv2Config\n"
+                "    # Compatibility: transformers 5.x requires these attributes\n"
+                "    _tied_weights_keys = []\n"
+                "    all_tied_weights_keys = {}",
+            )
+            if patched != content:
+                with open(model_file, "w") as f:
+                    f.write(patched)
+                logger.info("Patched modeling_hhem_v2.py for transformers 5.x compatibility")
+        except Exception as e:
+            logger.warning(f"Could not patch HHEM model file: {e}")
 
     def _predict_hhem(self, pairs: List[Tuple[str, str]]) -> List[float]:
         """Run HHEM prediction and normalize output to list of floats."""

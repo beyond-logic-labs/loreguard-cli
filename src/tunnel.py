@@ -539,6 +539,7 @@ class BackendTunnel:
                     "workerId": self.worker_id,
                     "success": "error" not in result or not result["error"],
                     "content": result.get("content", ""),
+                    "finishReason": result.get("finish_reason", ""),
                     "tokensUsed": result.get("usage", {}).get("total_tokens", 0),
                     "generationMs": generation_ms,
                     "errorMessage": result.get("error", ""),
@@ -724,6 +725,7 @@ class BackendTunnel:
                     usage = chunk.get("usage", {})
                     # Use the processed content from the done chunk
                     final_content = chunk.get("content", "".join(content_parts))
+                    finish_reason = chunk.get("finish_reason", "")
 
                     latency_ms = int((time.time() - start_time) * 1000)
 
@@ -742,6 +744,7 @@ class BackendTunnel:
                             "success": True,
                             "content": final_content,
                             "thinking": thinking,
+                            "finishReason": finish_reason,
                             "tokenCount": token_count,
                             "latencyMs": latency_ms,
                         },
