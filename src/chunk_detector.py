@@ -44,7 +44,7 @@ CHUNK_HYPOTHESES = {
 
 # Threshold for "starts new thought" classification
 # If confidence > threshold, we create a new chunk
-NEW_THOUGHT_THRESHOLD = 0.55
+NEW_THOUGHT_THRESHOLD = 0.38
 
 
 class ChunkDetector:
