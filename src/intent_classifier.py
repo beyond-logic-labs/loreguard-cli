@@ -1,4 +1,4 @@
- """Intent Classification service for adaptive retrieval (ADR-0010).
+"""Intent Classification service for adaptive retrieval (ADR-0010).
 
 This module provides zero-shot intent classification for the NPC dialogue pipeline.
 It uses DeBERTa-v3-large-zeroshot to classify user messages into retrieval strategy categories:
