@@ -122,7 +122,7 @@ class NLIService:
                 # HHEMv2 custom class (built for transformers 4.39) lacks
                 # all_tied_weights_keys required by transformers 5.x.
                 # Patch the vendored modeling file before loading.
-                self._patch_hhem_model_file()
+                self._patch_hhem_model_files()
                 self._model = AutoModelForSequenceClassification.from_pretrained(
                     self._model_path,
                     trust_remote_code=True,
@@ -328,39 +328,73 @@ class NLIService:
 
             return results
 
-    def _patch_hhem_model_file(self):
-        """Patch vendored modeling_hhem_v2.py for transformers 5.x compatibility.
+    def _patch_hhem_model_files(self):
+        """Patch vendored HHEM files for transformers 5.x compatibility.
 
-        The HHEM model was built for transformers 4.39. Transformers 5.x requires
-        `all_tied_weights_keys` during PreTrainedModel.__init__(), which the
-        custom class doesn't define. Since trust_remote_code loads the .py file
-        directly, we patch the file before from_pretrained reads it.
+        The HHEM model was built for transformers 4.39. Transformers 5.x:
+        1. Requires `all_tied_weights_keys` during PreTrainedModel.__init__()
+        2. Is stricter about model_type matching between config.json and config class
+        Since trust_remote_code loads the .py files directly, we patch before loading.
         """
+        # Patch 1: modeling_hhem_v2.py — add missing class attributes
         model_file = os.path.join(self._model_path, "modeling_hhem_v2.py")
-        if not os.path.exists(model_file):
-            return
+        if os.path.exists(model_file):
+            try:
+                content = open(model_file, "r").read()
+                if "all_tied_weights_keys" not in content:
+                    patched = content.replace(
+                        "class HHEMv2ForSequenceClassification(PreTrainedModel):\n"
+                        "    config_class = HHEMv2Config",
+                        "class HHEMv2ForSequenceClassification(PreTrainedModel):\n"
+                        "    config_class = HHEMv2Config\n"
+                        "    # Compatibility: transformers 5.x requires these attributes\n"
+                        "    _tied_weights_keys = []\n"
+                        "    all_tied_weights_keys = {}",
+                    )
+                    if patched != content:
+                        with open(model_file, "w") as f:
+                            f.write(patched)
+                        logger.info("Patched modeling_hhem_v2.py for transformers 5.x")
+            except Exception as e:
+                logger.warning(f"Could not patch modeling_hhem_v2.py: {e}")
 
-        try:
-            content = open(model_file, "r").read()
-            if "all_tied_weights_keys" in content:
-                return  # Already patched
+        # Patch 2: config.json — fix model_type mismatch
+        # config.json has "HHEMv2Config" but the config class defines model_type = "HHEMv2"
+        config_file = os.path.join(self._model_path, "config.json")
+        if os.path.exists(config_file):
+            try:
+                content = open(config_file, "r").read()
+                if '"model_type": "HHEMv2Config"' in content:
+                    patched = content.replace(
+                        '"model_type": "HHEMv2Config"',
+                        '"model_type": "HHEMv2"',
+                    )
+                    with open(config_file, "w") as f:
+                        f.write(patched)
+                    logger.info("Patched config.json: model_type HHEMv2Config -> HHEMv2")
+            except Exception as e:
+                logger.warning(f"Could not patch config.json: {e}")
 
-            # Add the missing attribute as a class variable
-            patched = content.replace(
-                "class HHEMv2ForSequenceClassification(PreTrainedModel):\n"
-                "    config_class = HHEMv2Config",
-                "class HHEMv2ForSequenceClassification(PreTrainedModel):\n"
-                "    config_class = HHEMv2Config\n"
-                "    # Compatibility: transformers 5.x requires these attributes\n"
-                "    _tied_weights_keys = []\n"
-                "    all_tied_weights_keys = {}",
-            )
-            if patched != content:
-                with open(model_file, "w") as f:
-                    f.write(patched)
-                logger.info("Patched modeling_hhem_v2.py for transformers 5.x compatibility")
-        except Exception as e:
-            logger.warning(f"Could not patch HHEM model file: {e}")
+        # Patch 3: configuration_hhem_v2.py — use local flan-t5-base instead of HuggingFace
+        # The HHEM model downloads google/flan-t5-base config+tokenizer at init.
+        # If we've bundled those files locally, rewrite the foundation path.
+        config_py = os.path.join(self._model_path, "configuration_hhem_v2.py")
+        local_foundation = os.path.join(self._model_path, "flan-t5-base")
+        if os.path.exists(config_py) and os.path.isdir(local_foundation):
+            try:
+                content = open(config_py, "r").read()
+                if '"google/flan-t5-base"' in content:
+                    # Use absolute path to the bundled flan-t5-base files
+                    abs_path = os.path.abspath(local_foundation)
+                    patched = content.replace(
+                        '"google/flan-t5-base"',
+                        f'"{abs_path}"',
+                    )
+                    with open(config_py, "w") as f:
+                        f.write(patched)
+                    logger.info(f"Patched foundation to local: {abs_path}")
+            except Exception as e:
+                logger.warning(f"Could not patch configuration_hhem_v2.py: {e}")
 
     def _predict_hhem(self, pairs: List[Tuple[str, str]]) -> List[float]:
         """Run HHEM prediction and normalize output to list of floats."""

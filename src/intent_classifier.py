@@ -52,7 +52,9 @@ INTENT_LABEL_DESCRIPTIONS = {
     ),
     IntentLabel.WORKING_MEMORY: (
         "a question about the NPC's own current state, feelings, recent "
-        "experiences, or personal memory that can be answered from working memory"
+        "experiences, or personal memory that can be answered from working memory; "
+        "this also includes clarification questions about what the NPC just said "
+        "(examples: what do you mean, what do you mean by that, clarify that)"
     ),
     IntentLabel.LIGHT_RETRIEVAL: (
         "a request for one specific factual detail (number, fee, date, name, "
@@ -60,7 +62,8 @@ INTENT_LABEL_DESCRIPTIONS = {
     ),
     IntentLabel.FULL_RETRIEVAL: (
         "a complex request requiring multiple facts, synthesis, planning, "
-        "comparison, or multi-step reasoning across sources"
+        "comparison, or multi-step reasoning across sources; not a brief clarification "
+        "of the NPC's own wording"
     ),
 }
 
