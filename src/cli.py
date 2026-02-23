@@ -82,21 +82,13 @@ class LoreguardCLI:
         log.info("=" * 50)
 
         try:
-            # Check LLM backend
-            from .config import LoreguardConfig, load_config as load_env_config
-            env = load_env_config()
-            self._llm_backend = env.get("LLM_BACKEND") or "llama"
+            # Resolve model path
+            if not await self._resolve_model():
+                return 1
 
-            if self._llm_backend != "claude":
-                # Resolve model path (only needed for local llama-server)
-                if not await self._resolve_model():
-                    return 1
-
-                # Start llama-server
-                if not await self._start_llama_server():
-                    return 1
-            else:
-                log.info(f"Using Claude CLI backend (model={env.get('CLAUDE_MODEL') or 'haiku'})")
+            # Start llama-server
+            if not await self._start_llama_server():
+                return 1
 
             # Connect to backend
             if not await self._connect_backend():
@@ -243,66 +235,54 @@ class LoreguardCLI:
             return True
 
         from .tunnel import BackendTunnel
-        from .llm import create_llm_proxy
-        from .config import LoreguardConfig
+        from .llm import LLMProxy
 
         log.info(f"Connecting to {self.backend_url}...")
         log.info(f"Worker ID: {self.worker_id}")
 
         try:
-            config = LoreguardConfig.load()
-            llm_proxy = create_llm_proxy(config)
+            llm_proxy = LLMProxy(f"http://127.0.0.1:{self.port}")
 
             # ADR-0027: Load all ML services — the client is the sole provider
             # of NLI, intent, dialogue act, and chunk capabilities.
             # Use resolve_model_path() to prefer pre-shipped models (enterprise bundles).
-            # Models are loaded in parallel threads to minimize startup time.
             from .config import resolve_model_path
-            import concurrent.futures
 
+            # Initialize NLI service (HHEM grounding model)
             nli_service = None
-            intent_classifier = None
-            dialogue_act_classifier = None
-            chunk_detector = None
-
-            def _load_nli():
+            try:
                 from .nli import NLIService
                 nli_model = resolve_model_path("vectara/hallucination_evaluation_model", "hhem")
                 log.info(f"Loading NLI model ({nli_model})...")
-                svc = NLIService(model_path=nli_model)
-                if svc.load_model():
-                    log.info(f"NLI ready (device: {svc.device})")
-                    return svc
-                log.warning("NLI model failed to load")
-                return None
+                nli_service = NLIService(model_path=nli_model)
+                if nli_service.load_model():
+                    log.info(f"NLI ready (device: {nli_service.device})")
+                else:
+                    log.warning("NLI model failed to load")
+                    nli_service = None
+            except Exception as e:
+                log.warning(f"NLI error: {e}")
 
-            def _load_intent():
+            # Initialize intent classifier (ADR-0010)
+            intent_classifier = None
+            try:
                 from .intent_classifier import IntentClassifier
                 intent_model = resolve_model_path("MoritzLaurer/DeBERTa-v3-large-zeroshot-v2.0", "deberta")
                 log.info(f"Loading intent classifier ({intent_model})...")
-                clf = IntentClassifier(model_path=intent_model)
-                if clf.load_model():
-                    log.info(f"Intent classifier ready (device: {clf.device})")
-                    return clf
-                log.warning("Intent classifier failed to load")
-                return None
+                intent_classifier = IntentClassifier(model_path=intent_model)
+                if intent_classifier.load_model():
+                    log.info(f"Intent classifier ready (device: {intent_classifier.device})")
+                else:
+                    log.warning("Intent classifier failed to load")
+                    intent_classifier = None
+            except Exception as e:
+                log.warning(f"Intent classifier error: {e}")
 
-            # Load NLI and intent classifier in parallel
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-                nli_future = pool.submit(_load_nli)
-                intent_future = pool.submit(_load_intent)
-
-                try:
-                    nli_service = nli_future.result()
-                except Exception as e:
-                    log.warning(f"NLI error: {e}")
-
-                try:
-                    intent_classifier = intent_future.result()
-                except Exception as e:
-                    log.warning(f"Intent classifier error: {e}")
+            # Dialogue act classifier disabled
+            dialogue_act_classifier = None
 
             # Initialize chunk detector (ADR-0023) - shares model with intent classifier
+            chunk_detector = None
             try:
                 from .chunk_detector import ChunkDetector
                 log.info("Loading chunk detector...")
@@ -319,20 +299,12 @@ class LoreguardCLI:
             except Exception as e:
                 log.warning(f"Chunk detector error: {e}")
 
-            # Determine model_id for registration
-            if self.model_path:
-                _reg_model_id = self.model_path.stem
-            elif self._llm_backend == "claude":
-                _reg_model_id = f"claude-{os.getenv('LOREGUARD_CLAUDE_MODEL') or 'haiku'}"
-            else:
-                _reg_model_id = "unknown"
-
             self._tunnel = BackendTunnel(
                 backend_url=self.backend_url,
                 llm_proxy=llm_proxy,
                 worker_id=self.worker_id,
                 worker_token=self.token,
-                model_id=_reg_model_id,
+                model_id=self.model_path.stem if self.model_path else "unknown",
                 nli_service=nli_service,
                 intent_classifier=intent_classifier,
                 dialogue_act_classifier=dialogue_act_classifier,
@@ -546,9 +518,8 @@ Available model IDs:
             log.error("Token required. Use --token or set LOREGUARD_TOKEN (or use --dev)")
             sys.exit(1)
 
-    # Validate model (skip if using Claude backend — no .gguf needed)
-    _llm_backend = os.getenv("LOREGUARD_LLM_BACKEND", "")
-    if _llm_backend != "claude" and not args.model and not args.model_id:
+    # Validate model
+    if not args.model and not args.model_id:
         log.error("Model required. Use --model or --model-id")
         sys.exit(1)
 

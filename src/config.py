@@ -49,8 +49,6 @@ class LoreguardConfig:
     dev_mode: bool = False
     context_size: int = 16384  # llama-server context window size (configurable per game)
     max_speech_tokens: int = 50  # Max tokens for NPC speech output (Pass 4). Default: 50 (~40 words)
-    llm_backend: str = "llama"  # "llama" (local llama-server) or "claude" (Claude CLI)
-    claude_model: str = "haiku"  # Claude model: haiku, sonnet, opus
 
     def save(self) -> None:
         """Save configuration to disk."""
@@ -73,8 +71,6 @@ class LoreguardConfig:
                     dev_mode=data.get("dev_mode", False),
                     context_size=data.get("context_size", 16384),
                     max_speech_tokens=data.get("max_speech_tokens", 50),
-                    llm_backend=data.get("llm_backend", "llama"),
-                    claude_model=data.get("claude_model", "haiku"),
                 )
             except (json.JSONDecodeError, KeyError):
                 pass
@@ -170,13 +166,6 @@ def load_config() -> dict:
         # When set, the client auto-discovers models from manifest.txt inside the bundle.
         # This is the single env var a game needs to set — no per-model configuration required.
         "BUNDLE_DIR": os.getenv("LOREGUARD_BUNDLE_DIR", ""),
-
-        # LLM backend override: "claude" to use Claude CLI instead of local llama-server.
-        # Overrides LoreguardConfig.llm_backend when set.
-        "LLM_BACKEND": os.getenv("LOREGUARD_LLM_BACKEND", ""),
-        # Claude model override: "haiku", "sonnet", "opus".
-        # Overrides LoreguardConfig.claude_model when set.
-        "CLAUDE_MODEL": os.getenv("LOREGUARD_CLAUDE_MODEL", ""),
     }
 
 

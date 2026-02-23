@@ -277,7 +277,7 @@ class BackendTunnel:
                     "modelId": model_id,
                     "maxTokens": 4096,
                     "capabilities": capabilities,
-                    "address": "local" if self.llm_proxy.endpoint == "claude-cli" else f"localhost:{self.llm_proxy.endpoint.split(':')[-1]}",
+                    "address": f"localhost:{self.llm_proxy.endpoint.split(':')[-1]}",
                     "status": "ready",
                     "queueDepth": 0,
                 },

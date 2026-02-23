@@ -19,32 +19,10 @@ from typing import Any, AsyncGenerator, Optional
 
 import httpx
 
-from .config import load_config, LoreguardConfig
+from .config import load_config
 from .llama_server import get_slot_cache_dir
 
 logger = logging.getLogger(__name__)
-
-
-def create_llm_proxy(config: LoreguardConfig) -> "LLMProxy":
-    """Factory: create the right LLM proxy based on config.
-
-    Returns LLMProxy for llama backend, ClaudeLLMProxy for claude backend.
-    Env vars LOREGUARD_LLM_BACKEND / LOREGUARD_CLAUDE_MODEL override config.
-    """
-    env = load_config()
-
-    # Resolve backend: env var > config file > default
-    backend = env.get("LLM_BACKEND") or config.llm_backend or "llama"
-    claude_model = env.get("CLAUDE_MODEL") or config.claude_model or "haiku"
-
-    if backend == "claude":
-        from .claude_llm import ClaudeLLMProxy
-        logger.info(f"Using Claude CLI backend (model={claude_model})")
-        return ClaudeLLMProxy(model=claude_model)
-    else:
-        endpoint = env["LLM_ENDPOINT"]
-        logger.info(f"Using llama.cpp backend ({endpoint})")
-        return LLMProxy(endpoint)
 
 
 @dataclass

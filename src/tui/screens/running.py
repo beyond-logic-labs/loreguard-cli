@@ -112,96 +112,85 @@ class RunningScreen(Screen):
         """Start llama-server and connect to backend."""
         from ...llama_server import LlamaServerProcess, is_llama_server_installed, download_llama_server
         from ...wizard import suppress_external_output
-        from ...config import LoreguardConfig, load_config as load_env_config
 
         app: "LoreguardApp" = self.app  # type: ignore
 
-        # Check LLM backend
-        env = load_env_config()
-        llm_backend = env.get("LLM_BACKEND") or "llama"
+        if not app.model_path:
+            self._log("No model selected", "error")
+            return
 
-        if llm_backend == "claude":
-            # Claude CLI backend — skip llama-server entirely
-            claude_model = env.get("CLAUDE_MODEL") or "haiku"
-            self._update_status("server", "LLM Backend", f"Claude CLI ({claude_model})", "success")
-            self._log(f"Using Claude CLI backend (model={claude_model})", "success")
-        else:
-            if not app.model_path:
-                self._log("No model selected", "error")
+        # Download llama-server if needed
+        if not is_llama_server_installed():
+            self._update_status("server", "llama-server", "Downloading...", "info")
+            try:
+                def on_progress(msg: str, prog):
+                    if prog:
+                        self._update_status("server", "llama-server", f"Downloading... {int(prog.percent)}%", "info")
+
+                await download_llama_server(on_progress)
+                self._update_status("server", "llama-server", "Downloaded", "success")
+            except Exception as e:
+                self._update_status("server", "llama-server", f"Failed: {e}", "error")
                 return
 
-            # Download llama-server if needed
-            if not is_llama_server_installed():
-                self._update_status("server", "llama-server", "Downloading...", "info")
-                try:
-                    def on_progress(msg: str, prog):
-                        if prog:
-                            self._update_status("server", "llama-server", f"Downloading... {int(prog.percent)}%", "info")
+        # Start llama-server
+        self._update_status("server", "llama-server", "Starting...")
+        self._update_status("model", "Model", app.model_path.name)
+        self._log(f"Starting llama-server with {app.model_path.name}", "info")
 
-                    await download_llama_server(on_progress)
-                    self._update_status("server", "llama-server", "Downloaded", "success")
-                except Exception as e:
-                    self._update_status("server", "llama-server", f"Failed: {e}", "error")
-                    return
+        self._llama_process = LlamaServerProcess(app.model_path, port=8080)
+        self._llama_process.start()
 
-            # Start llama-server
-            self._update_status("server", "llama-server", "Starting...")
-            self._update_status("model", "Model", app.model_path.name)
-            self._log(f"Starting llama-server with {app.model_path.name}", "info")
+        # Wait for model to load with progress updates
+        self._log("Loading LLM model, this may take a minute...", "info")
+        import time
+        import httpx
 
-            self._llama_process = LlamaServerProcess(app.model_path, port=8080)
-            self._llama_process.start()
+        start = time.time()
+        timeout = 120.0
+        ready = False
 
-            # Wait for model to load with progress updates
-            self._log("Loading LLM model, this may take a minute...", "info")
-            import time
-            import httpx
-
-            start = time.time()
-            timeout = 120.0
-            ready = False
-
-            async with httpx.AsyncClient() as client:
-                while time.time() - start < timeout:
-                    elapsed = int(time.time() - start)
-                    self._update_status("server", "llama-server", f"Loading model... ({elapsed}s)", "info")
-
-                    # Check if process died
-                    if self._llama_process.process and self._llama_process.process.poll() is not None:
-                        self._log("llama-server process terminated unexpectedly", "error")
-                        break
-
-                    try:
-                        response = await client.get(
-                            f"http://127.0.0.1:{self._llama_process.port}/health",
-                            timeout=5.0
-                        )
-                        if response.status_code == 200:
-                            ready = True
-                            break
-                        # 503 means "loading" - server is up but model not ready yet
-                    except httpx.RequestError:
-                        pass
-
-                    await asyncio.sleep(1.0)
-
-            if not ready:
-                self._llama_process.stop()
+        async with httpx.AsyncClient() as client:
+            while time.time() - start < timeout:
                 elapsed = int(time.time() - start)
-                self._update_status("server", "llama-server", f"Failed after {elapsed}s", "error")
-                self._log(f"llama-server failed to start after {elapsed}s", "error")
-                return
+                self._update_status("server", "llama-server", f"Loading model... ({elapsed}s)", "info")
 
+                # Check if process died
+                if self._llama_process.process and self._llama_process.process.poll() is not None:
+                    self._log("llama-server process terminated unexpectedly", "error")
+                    break
+
+                try:
+                    response = await client.get(
+                        f"http://127.0.0.1:{self._llama_process.port}/health",
+                        timeout=5.0
+                    )
+                    if response.status_code == 200:
+                        ready = True
+                        break
+                    # 503 means "loading" - server is up but model not ready yet
+                except httpx.RequestError:
+                    pass
+
+                await asyncio.sleep(1.0)
+
+        if not ready:
+            self._llama_process.stop()
             elapsed = int(time.time() - start)
-            self._update_status("server", "llama-server", f"Running on :8080 ({elapsed}s)", "success")
-            self._log(f"LLM ready in {elapsed}s", "success")
+            self._update_status("server", "llama-server", f"Failed after {elapsed}s", "error")
+            self._log(f"llama-server failed to start after {elapsed}s", "error")
+            return
+
+        elapsed = int(time.time() - start)
+        self._update_status("server", "llama-server", f"Running on :8080 ({elapsed}s)", "success")
+        self._log(f"LLM ready in {elapsed}s", "success")
 
         # Connect backend
         if not app.dev_mode:
             self._update_status("backend", "Backend", "Connecting...", "info")
             try:
                 from ...tunnel import BackendTunnel
-                from ...llm import create_llm_proxy
+                from ...llm import LLMProxy
                 from ...nli import NLIService
                 from ...intent_classifier import IntentClassifier
                 from ...dialogue_act_classifier import (
@@ -211,8 +200,7 @@ class RunningScreen(Screen):
                     get_dialogue_act_model_info,
                 )
 
-                config = LoreguardConfig.load()
-                llm_proxy = create_llm_proxy(config)
+                llm_proxy = LLMProxy("http://127.0.0.1:8080")
 
                 # Load NLI service (run in thread pool to not block event loop)
                 nli_service = None
