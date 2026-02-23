@@ -146,22 +146,25 @@ class ClaudeLLMProxy:
         if not prompt:
             return {"error": "Empty prompt after formatting", "content": ""}
 
-        # Build command
+        # Build command — note: --tools must come LAST before the prompt
+        # because it's variadic and an empty string can confuse arg parsing
         cmd = [
             "claude", "-p",
             "--model", self.model,
             "--output-format", "text",
-            "--tools", "",
         ]
 
         if system_prompt:
             cmd.extend(["--system-prompt", system_prompt])
 
-        # JSON mode
-        if req.force_json and req.json_schema:
-            cmd.extend(["--json-schema", json.dumps(req.json_schema)])
-        elif req.force_json:
-            prompt += "\n\nRespond with valid JSON only. No markdown, no explanation."
+        # JSON mode: include schema in prompt rather than --json-schema flag
+        # to avoid output format interaction issues
+        if req.force_json:
+            if req.json_schema:
+                schema_str = json.dumps(req.json_schema, indent=2)
+                prompt += f"\n\nRespond with valid JSON matching this schema:\n{schema_str}\n\nOutput ONLY the JSON object. No markdown, no explanation, no code fences."
+            else:
+                prompt += "\n\nRespond with valid JSON only. No markdown, no explanation."
 
         # Max tokens via append-system-prompt (claude CLI doesn't have a direct flag)
         if req.max_tokens and req.max_tokens < 4096:
@@ -172,12 +175,15 @@ class ClaudeLLMProxy:
 
         cmd.append(prompt)
 
-        # Log request summary
+        # Log request summary (cmd without the prompt for readability)
         total_chars = sum(len(m.get("content", "")) for m in req.messages)
+        cmd_summary = " ".join(cmd[:-1])  # everything except the prompt
         logger.info(
             f"Claude CLI request: model={self.model}, {len(req.messages)} messages, "
-            f"{total_chars} chars, max_tokens={req.max_tokens}"
+            f"{total_chars} chars, max_tokens={req.max_tokens}, "
+            f"force_json={req.force_json}, prompt_len={len(prompt)}"
         )
+        logger.debug(f"Claude CLI cmd: {cmd_summary} <prompt:{len(prompt)} chars>")
 
         # Execute subprocess
         timeout = req.timeout or self.default_timeout
@@ -203,12 +209,17 @@ class ClaudeLLMProxy:
         stdout_text = stdout.decode("utf-8", errors="replace").strip()
         stderr_text = stderr.decode("utf-8", errors="replace").strip()
 
+        # Always log stderr for debugging (claude CLI may print warnings there)
+        if stderr_text:
+            logger.info(f"Claude CLI stderr: {stderr_text[:500]}")
+
         if proc.returncode != 0:
             error_msg = stderr_text[:500] if stderr_text else f"Exit code {proc.returncode}"
-            logger.warning(f"Claude CLI failed: {error_msg}")
+            logger.warning(f"Claude CLI failed (rc={proc.returncode}): {error_msg}")
             return {"error": f"Claude CLI error: {error_msg}", "content": ""}
 
         if not stdout_text:
+            logger.warning(f"Claude CLI returned empty stdout (rc=0, stderr={stderr_text[:200]})")
             return {"error": "Empty response from Claude CLI", "content": ""}
 
         logger.info(f"Claude CLI response: {len(stdout_text)} chars")
