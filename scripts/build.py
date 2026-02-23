@@ -28,12 +28,15 @@ def main():
 
     print(f"Building Loreguard for {system}...")
 
+    # --clean only needed when dependencies change (forces full re-analysis)
+    clean = "--clean" in sys.argv
+
     # PyInstaller command
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--onefile",
         "--name", "loreguard",
-        "--clean",
+        *(["--clean"] if clean else []),
         # Add src to path so imports work
         "--paths", ".",
         # Include templates directory (jinja chat templates for llama-server)
