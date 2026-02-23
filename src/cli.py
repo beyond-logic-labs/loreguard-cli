@@ -528,8 +528,9 @@ Available model IDs:
             log.error("Token required. Use --token or set LOREGUARD_TOKEN (or use --dev)")
             sys.exit(1)
 
-    # Validate model
-    if not args.model and not args.model_id:
+    # Validate model (skip if using Claude backend — no .gguf needed)
+    _llm_backend = os.getenv("LOREGUARD_LLM_BACKEND", "")
+    if _llm_backend != "claude" and not args.model and not args.model_id:
         log.error("Model required. Use --model or --model-id")
         sys.exit(1)
 
