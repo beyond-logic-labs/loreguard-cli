@@ -1363,23 +1363,34 @@ async def step_start(
             print_error(f"Failed: {e}")
             return 1
 
-    # Start llama-server
-    status.set_line("server", "llama-server", "Starting...")
-    status.set_line("model", "Model", model_path.name)
+    # Check LLM backend
+    from .config import LoreguardConfig as _LGConfig, load_config as _load_env
+    _env = _load_env()
+    _llm_backend = _env.get("LLM_BACKEND") or "llama"
 
-    llama = LlamaServerProcess(model_path, port=8080)
-    llama.start()
+    llama = None
+    if _llm_backend != "claude":
+        # Start llama-server
+        status.set_line("server", "llama-server", "Starting...")
+        status.set_line("model", "Model", model_path.name)
 
-    status.set_line("server", "llama-server", "Loading model...")
-    ready = await llama.wait_for_ready(timeout=120.0)
+        llama = LlamaServerProcess(model_path, port=8080)
+        llama.start()
 
-    if not ready:
-        status.stop()
-        llama.stop()
-        print_error("llama-server failed to start")
-        return 1
+        status.set_line("server", "llama-server", "Loading model...")
+        ready = await llama.wait_for_ready(timeout=120.0)
 
-    status.set_line("server", "llama-server", "✓ Running on :8080")
+        if not ready:
+            status.stop()
+            llama.stop()
+            print_error("llama-server failed to start")
+            return 1
+
+        status.set_line("server", "llama-server", "✓ Running on :8080")
+    else:
+        _claude_model = _env.get("CLAUDE_MODEL") or "haiku"
+        status.set_line("server", "LLM Backend", f"✓ Claude CLI ({_claude_model})")
+        status.set_line("model", "Model", _claude_model)
 
     # Connect backend
     tunnel = None
@@ -1387,9 +1398,10 @@ async def step_start(
         status.set_line("backend", "Backend", "Connecting...")
         try:
             from .tunnel import BackendTunnel
-            from .llm import LLMProxy
+            from .llm import create_llm_proxy
 
-            llm_proxy = LLMProxy("http://127.0.0.1:8080")
+            _cfg = _LGConfig.load()
+            llm_proxy = create_llm_proxy(_cfg)
 
             nli_service = None
             if nli_enabled:
@@ -1612,7 +1624,8 @@ async def step_start(
     status.set_line("server", "llama-server", "Stopping...")
     status.stop()
 
-    llama.stop()
+    if llama:
+        llama.stop()
     if tunnel:
         try:
             await tunnel.disconnect()

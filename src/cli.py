@@ -82,13 +82,21 @@ class LoreguardCLI:
         log.info("=" * 50)
 
         try:
-            # Resolve model path
-            if not await self._resolve_model():
-                return 1
+            # Check LLM backend
+            from .config import LoreguardConfig, load_config as load_env_config
+            env = load_env_config()
+            self._llm_backend = env.get("LLM_BACKEND") or "llama"
 
-            # Start llama-server
-            if not await self._start_llama_server():
-                return 1
+            if self._llm_backend != "claude":
+                # Resolve model path (only needed for local llama-server)
+                if not await self._resolve_model():
+                    return 1
+
+                # Start llama-server
+                if not await self._start_llama_server():
+                    return 1
+            else:
+                log.info(f"Using Claude CLI backend (model={env.get('CLAUDE_MODEL') or 'haiku'})")
 
             # Connect to backend
             if not await self._connect_backend():
@@ -235,13 +243,15 @@ class LoreguardCLI:
             return True
 
         from .tunnel import BackendTunnel
-        from .llm import LLMProxy
+        from .llm import create_llm_proxy
+        from .config import LoreguardConfig
 
         log.info(f"Connecting to {self.backend_url}...")
         log.info(f"Worker ID: {self.worker_id}")
 
         try:
-            llm_proxy = LLMProxy(f"http://127.0.0.1:{self.port}")
+            config = LoreguardConfig.load()
+            llm_proxy = create_llm_proxy(config)
 
             # ADR-0027: Load all ML services — the client is the sole provider
             # of NLI, intent, dialogue act, and chunk capabilities.

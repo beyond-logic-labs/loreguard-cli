@@ -73,17 +73,20 @@ async def startup():
     # Note: runtime.json is written by run() before hypercorn starts
     # (socket is already bound at that point)
 
-    # Initialize local LLM connection
-    llm_url = get_config_value("LLM_ENDPOINT", "http://localhost:8080")
-    console.print(f"[green]LLM endpoint:[/green] {llm_url}")
-    llm_proxy = LLMProxy(llm_url)
+    # Initialize LLM connection
+    from .llm import create_llm_proxy
+    from .config import LoreguardConfig
+    config = LoreguardConfig.load()
+    llm_proxy = create_llm_proxy(config)
+    console.print(f"[green]LLM backend:[/green] {llm_proxy.llm_type} ({llm_proxy.endpoint})")
 
     # Check LLM availability
     if await llm_proxy.check():
         console.print("[green]LLM is available[/green]")
-        models = await llm_proxy.list_models()
-        if models:
-            console.print(f"[cyan]Available models:[/cyan] {', '.join(models[:5])}")
+        if hasattr(llm_proxy, 'list_models'):
+            models = await llm_proxy.list_models()
+            if models:
+                console.print(f"[cyan]Available models:[/cyan] {', '.join(models[:5])}")
     else:
         console.print("[yellow]Warning: LLM not available yet[/yellow]")
 
