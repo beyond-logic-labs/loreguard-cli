@@ -55,7 +55,7 @@ class LoreguardApp(App):
     worker_id: str = ""
     model_path: Optional[Path] = None
     adapter_path: Optional[Path] = None  # Optional LoRA adapter
-    model_family: str = "llama3"  # Model family profile (llama3, qwen3, gemma, chatml)
+    model_family: str = "auto"  # Model family profile (auto, llama3, qwen3, gemma, chatml)
     hardware: Optional[HardwareData] = None
     dev_mode: bool = False
     verbose: bool = False

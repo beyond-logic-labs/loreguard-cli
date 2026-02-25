@@ -49,7 +49,7 @@ class LoreguardConfig:
     dev_mode: bool = False
     context_size: int = 16384  # llama-server context window size (configurable per game)
     max_speech_tokens: int = 50  # Max tokens for NPC speech output (Pass 4). Default: 50 (~40 words)
-    model_family: str = "llama3"  # Model family profile ID (llama3, qwen3, gemma, chatml)
+    model_family: str = "auto"  # Model family profile (auto, llama3, qwen3, gemma, chatml)
 
     def save(self) -> None:
         """Save configuration to disk."""
@@ -72,7 +72,7 @@ class LoreguardConfig:
                     dev_mode=data.get("dev_mode", False),
                     context_size=data.get("context_size", 16384),
                     max_speech_tokens=data.get("max_speech_tokens", 50),
-                    model_family=data.get("model_family", "llama3"),
+                    model_family=data.get("model_family", "auto"),
                 )
             except (json.JSONDecodeError, KeyError):
                 pass

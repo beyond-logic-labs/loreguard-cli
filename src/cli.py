@@ -464,9 +464,9 @@ Available model IDs:
     )
     parser.add_argument(
         "--model-family",
-        default=os.getenv("LOREGUARD_MODEL_FAMILY", "llama3"),
-        choices=["llama3", "qwen3", "gemma", "chatml"],
-        help="Model family profile for chat template/stop sequences (default: llama3)",
+        default=os.getenv("LOREGUARD_MODEL_FAMILY", "auto"),
+        choices=["auto", "llama3", "qwen3", "gemma", "chatml"],
+        help="Model family profile for chat template/stop sequences (default: auto)",
     )
     parser.add_argument(
         "--dev",

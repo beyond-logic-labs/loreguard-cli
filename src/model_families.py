@@ -34,6 +34,19 @@ class ModelFamilyProfile:
 # Registry of known model family profiles.
 # Key = profile ID (stored in config.json as model_family).
 MODEL_FAMILIES: dict[str, ModelFamilyProfile] = {
+    "auto": ModelFamilyProfile(
+        id="auto",
+        name="Auto (Model Embedded)",
+        chat_template_file=None,
+        stop_sequences=(
+            # Superset — works for any model, extra tokens are inert
+            "<|im_end|>", "<|im_start|>", "<|endoftext|>",
+            "<|eot_id|>", "<|end_of_text|>",
+            "<end_of_turn>", "<start_of_turn>",
+            "</s>", "<|end|>",
+        ),
+        description="Uses model's embedded chat template. Works for most models.",
+    ),
     "llama3": ModelFamilyProfile(
         id="llama3",
         name="Llama 3 / 3.1",
@@ -79,7 +92,7 @@ MODEL_FAMILIES: dict[str, ModelFamilyProfile] = {
     ),
 }
 
-DEFAULT_MODEL_FAMILY = "llama3"
+DEFAULT_MODEL_FAMILY = "auto"
 
 
 def get_model_family(family_id: str) -> ModelFamilyProfile:
