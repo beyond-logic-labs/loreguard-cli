@@ -37,16 +37,16 @@ class SamplingConfig:
     presence_penalty: float = 0.0
 
 
-# Default stop sequences - ChatML/instruction markers that signal end of turn
-DEFAULT_STOP_SEQUENCES = [
-    "<|im_end|>",
-    "<|im_start|>",
-    "<|endoftext|>",
-    "</s>",
-    "<|end|>",
-    "<|user|>",
-    "<|assistant|>",
-]
+from .model_families import get_model_family, ALL_STOP_MARKERS, DEFAULT_MODEL_FAMILY
+
+
+def get_stop_sequences(model_family: str = DEFAULT_MODEL_FAMILY) -> list[str]:
+    """Get stop sequences for the given model family."""
+    return list(get_model_family(model_family).stop_sequences)
+
+
+# Backward-compatible default (Llama 3 stop sequences)
+DEFAULT_STOP_SEQUENCES = get_stop_sequences(DEFAULT_MODEL_FAMILY)
 
 
 @dataclass
@@ -94,11 +94,13 @@ class LLMProxy:
     sampling configuration, stop sequences, and JSON mode support.
     """
 
-    def __init__(self, endpoint: str, timeout: float = 120.0):
+    def __init__(self, endpoint: str, timeout: float = 120.0, model_family: str = DEFAULT_MODEL_FAMILY):
         if not endpoint:
             raise ValueError("LLM endpoint is required")
         self.endpoint = endpoint.rstrip("/")
         self.default_timeout = timeout
+        self.model_family = model_family
+        self._stop_sequences = get_stop_sequences(model_family)
         self.client = httpx.AsyncClient(
             timeout=timeout,
             limits=httpx.Limits(
@@ -524,7 +526,7 @@ class LLMProxy:
             max_tokens=d.get("max_tokens", 512),
             timeout=timeout,
             sampling=sampling,
-            stop=d.get("stop", DEFAULT_STOP_SEQUENCES.copy()),
+            stop=d.get("stop", self._stop_sequences.copy()),
             disable_thinking=d.get("disable_thinking", False),
             require_content=d.get("require_content", False),
             force_json=d.get("force_json", False),
@@ -717,14 +719,12 @@ class LLMProxy:
         return -1
 
     def _strip_chat_markers(self, content: str) -> str:
-        """Remove content after ChatML markers that indicate hallucinated turns."""
-        markers = [
-            "<|im_end|>", "<|im_start|>", "<|endoftext|>",
-            "</s>", "<|end|>", "<|user|>", "<|assistant|>",
-        ]
+        """Remove content after chat markers that indicate hallucinated turns.
 
+        Uses a superset of all model families' tokens as a safety net.
+        """
         result = content
-        for marker in markers:
+        for marker in ALL_STOP_MARKERS:
             if marker in result:
                 idx = result.index(marker)
                 result = result[:idx]

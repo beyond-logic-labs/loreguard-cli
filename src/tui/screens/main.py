@@ -156,6 +156,7 @@ class MainScreen(Screen):
             app.api_token = config.api_token
             app.model_path = config.get_model_path_obj()
             app.adapter_path = config.get_adapter_path_obj()
+            app.model_family = config.model_family
             app.dev_mode = config.dev_mode
 
             model_name = app.model_path.name if app.model_path else 'unknown'
@@ -420,7 +421,7 @@ class MainScreen(Screen):
 
         # Start llama-server (with optional LoRA adapter)
         self._update_status("Starting llama-server...")
-        app._llama_process = LlamaServerProcess(app.model_path, port=8080, lora_path=app.adapter_path)
+        app._llama_process = LlamaServerProcess(app.model_path, port=8080, lora_path=app.adapter_path, model_family=app.model_family)
         app._llama_process.start()
 
         # Wait for model to load with progress updates
@@ -507,7 +508,7 @@ class MainScreen(Screen):
         self._update_connection_status("connecting")
 
         try:
-            llm_proxy = LLMProxy("http://127.0.0.1:8080")
+            llm_proxy = LLMProxy("http://127.0.0.1:8080", model_family=app.model_family)
 
             # Load NLI service (run in thread pool to not block event loop)
             nli_service = None

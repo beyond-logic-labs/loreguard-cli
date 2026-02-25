@@ -372,11 +372,13 @@ class LlamaServerProcess:
         port: int = 8080,
         lora_path: Optional[Path] = None,
         context_size: int = 16384,
+        model_family: str = "llama3",
     ):
         self.model_path = model_path
         self.port = port
         self.lora_path = lora_path
         self.context_size = context_size
+        self.model_family = model_family
         self.process: Optional[subprocess.Popen] = None
         self._output_lines: list[str] = []
 
@@ -406,12 +408,17 @@ class LlamaServerProcess:
             # Without this, llama-server may allocate multiple slots, each consuming
             # KV cache memory proportional to context_size * model_hidden_dim.
             "-np", "1",
-            # Use custom Jinja template without tool-calling logic.
-            # Llama 3.1's built-in template forces tool-calling format even without tools,
-            # so we use a stripped-down template that only handles chat messages.
+            # Enable Jinja template processing (required for both custom and embedded templates)
             "--jinja",
-            "--chat-template-file", str(_get_templates_dir() / "llama31-no-tools.jinja"),
         ]
+
+        # Apply model-family-specific chat template override.
+        # Llama 3.1 requires a custom template to avoid the tool-calling bug;
+        # other families use their GGUF-embedded template (--jinja alone).
+        from .model_families import get_model_family
+        family = get_model_family(self.model_family)
+        if family.chat_template_file:
+            cmd.extend(["--chat-template-file", str(_get_templates_dir() / family.chat_template_file)])
 
         # Add LoRA adapter if specified
         if self.lora_path and self.lora_path.exists():

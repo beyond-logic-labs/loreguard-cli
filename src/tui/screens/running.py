@@ -138,7 +138,7 @@ class RunningScreen(Screen):
         self._update_status("model", "Model", app.model_path.name)
         self._log(f"Starting llama-server with {app.model_path.name}", "info")
 
-        self._llama_process = LlamaServerProcess(app.model_path, port=8080)
+        self._llama_process = LlamaServerProcess(app.model_path, port=8080, model_family=app.model_family)
         self._llama_process.start()
 
         # Wait for model to load with progress updates
@@ -200,7 +200,7 @@ class RunningScreen(Screen):
                     get_dialogue_act_model_info,
                 )
 
-                llm_proxy = LLMProxy("http://127.0.0.1:8080")
+                llm_proxy = LLMProxy("http://127.0.0.1:8080", model_family=app.model_family)
 
                 # Load NLI service (run in thread pool to not block event loop)
                 nli_service = None

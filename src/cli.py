@@ -46,12 +46,14 @@ class LoreguardCLI:
         port: int = 8080,
         backend_url: str = "wss://api.loreguard.com/workers",
         worker_id: Optional[str] = None,
+        model_family: str = "llama3",
     ):
         self.token = token
         self.model_path = model_path
         self.model_id = model_id
         self.port = port
         self.backend_url = backend_url
+        self.model_family = model_family
         # Worker ID: use provided value, or default to sanitized hostname.
         # Validator requires ^[a-zA-Z0-9_-]{1,64}$ — replace dots with hyphens.
         raw_id = worker_id or socket.gethostname() or "worker"
@@ -209,7 +211,7 @@ class LoreguardCLI:
         # Start server
         log.info(f"Starting llama-server on port {self.port}...")
         try:
-            self._llama = LlamaServerProcess(self.model_path, port=self.port)
+            self._llama = LlamaServerProcess(self.model_path, port=self.port, model_family=self.model_family)
             self._llama.start()
 
             # Wait for ready
@@ -241,7 +243,7 @@ class LoreguardCLI:
         log.info(f"Worker ID: {self.worker_id}")
 
         try:
-            llm_proxy = LLMProxy(f"http://127.0.0.1:{self.port}")
+            llm_proxy = LLMProxy(f"http://127.0.0.1:{self.port}", model_family=self.model_family)
 
             # ADR-0027: Load all ML services — the client is the sole provider
             # of NLI, intent, dialogue act, and chunk capabilities.
@@ -461,6 +463,12 @@ Available model IDs:
         help="Loreguard bundle directory. Auto-discovers models from manifest.txt.",
     )
     parser.add_argument(
+        "--model-family",
+        default=os.getenv("LOREGUARD_MODEL_FAMILY", "llama3"),
+        choices=["llama3", "qwen3", "gemma", "chatml"],
+        help="Model family profile for chat template/stop sequences (default: llama3)",
+    )
+    parser.add_argument(
         "--dev",
         action="store_true",
         help="Dev mode - skip backend connection, just run llama-server",
@@ -531,6 +539,7 @@ Available model IDs:
         port=args.port,
         backend_url=args.backend,
         worker_id=args.worker_id or None,  # None will use hostname
+        model_family=args.model_family,
     )
 
     exit_code = asyncio.run(cli.run())
