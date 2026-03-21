@@ -8,6 +8,8 @@ HTTP endpoints:
   GET  /api/capabilities  - Feature discovery (streaming, chunk modes)
   GET  /api/characters    - List available NPCs (proxied from engine)
   POST /api/chat          - Chat with an NPC (streaming SSE or JSON)
+  GET  /api/models        - List available GGUF models
+  POST /api/admin/reload-model - Hot-swap LLM model at runtime
 
 The server shares the existing tunnel connection instead of creating
 a new one, ensuring a single WebSocket connection per worker.
@@ -17,10 +19,12 @@ Uses uvicorn with socket-first binding for race-condition-free port allocation.
 
 import asyncio
 import json
+import os
 import threading
 import time
 import uuid
 from concurrent.futures import Future
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .runtime import write_runtime_info, RuntimeInfo, get_runtime_path, get_version
@@ -63,6 +67,8 @@ class EmbeddedHTTPServer:
         self._running = False
         self._bound_socket: Optional[Any] = None
         self._ready_event = threading.Event()
+        self.llama_process: Optional[Any] = None  # LlamaServerProcess — set by RunningScreen
+        self.models_dir: Optional[Path] = None     # Path to models/ directory
 
     def start(self) -> int:
         """Start the HTTP server in a background thread.
@@ -483,6 +489,101 @@ class EmbeddedHTTPServer:
                     return JSONResponse(status_code=500, content=result)
                 return result
 
+        @app.get("/api/models")
+        async def list_models():
+            """List available GGUF models in the models directory."""
+            if not server.models_dir or not server.models_dir.exists():
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": "Models directory not configured"},
+                )
+
+            models = []
+            active_model = None
+            if server.llama_process and hasattr(server.llama_process, "model_path"):
+                active_model = server.llama_process.model_path.name
+
+            for f in sorted(server.models_dir.iterdir()):
+                if f.suffix == ".gguf" and f.is_file():
+                    models.append({
+                        "name": f.name,
+                        "size": f.stat().st_size,
+                        "active": f.name == active_model,
+                    })
+
+            return {"models": models, "activeModel": active_model}
+
+        @app.post("/api/admin/reload-model")
+        async def reload_model(request: Request):
+            """Hot-swap the LLM model by restarting llama-server."""
+            if not server.llama_process:
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": "LLM server not available"},
+                )
+            if not server.models_dir:
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": "Models directory not configured"},
+                )
+
+            body = await request.json()
+            model_name = body.get("model", "")
+            if not model_name:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "Missing 'model' field"},
+                )
+
+            # Security: prevent path traversal
+            if "/" in model_name or "\\" in model_name or ".." in model_name:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "Invalid model name"},
+                )
+
+            model_path = server.models_dir / model_name
+            if not model_path.exists() or not model_path.suffix == ".gguf":
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": f"Model '{model_name}' not found"},
+                )
+
+            # Check if already active
+            if hasattr(server.llama_process, "model_path") and server.llama_process.model_path.name == model_name:
+                return {"status": "already_active", "model": model_name}
+
+            try:
+                # Stop current llama-server
+                server.llama_process.stop()
+
+                # Update model path and restart
+                server.llama_process.model_path = model_path
+                server.llama_process.start()
+
+                # Wait for health check (llama-server takes a few seconds to load model)
+                import httpx
+                llama_url = f"http://127.0.0.1:{server.llama_process.port}/health"
+                for attempt in range(60):  # 60 attempts × 0.5s = 30s timeout
+                    await asyncio.sleep(0.5)
+                    try:
+                        async with httpx.AsyncClient(timeout=2.0) as client:
+                            resp = await client.get(llama_url)
+                            if resp.status_code == 200:
+                                return {"status": "ok", "model": model_name}
+                    except Exception:
+                        continue
+
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": "Model loaded but health check timed out after 30s"},
+                )
+            except Exception as e:
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": f"Failed to reload model: {e}"},
+                )
+
         # Write runtime info
         with open(debug_path, "a") as f:
             f.write(f"[SDK Server] Writing runtime info for port {self.actual_port}...\n")
@@ -608,6 +709,15 @@ def force_stop_sdk_server() -> None:
             _server._loop.call_soon_threadsafe(_server._loop.stop)
         # Don't wait for thread - it's a daemon thread anyway
         _server = None
+
+
+def set_llama_process(llama_process: Any, models_dir: Optional[Path] = None) -> None:
+    """Set the LlamaServerProcess reference on the SDK server for model management."""
+    global _server
+    if _server:
+        _server.llama_process = llama_process
+        if models_dir:
+            _server.models_dir = models_dir
 
 
 def update_backend_status(connected: bool) -> None:

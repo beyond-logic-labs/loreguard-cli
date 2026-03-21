@@ -325,6 +325,11 @@ class LoreguardCLI:
                     port=sdk_port,
                 )
                 log.info(f"SDK server listening on 127.0.0.1:{self._sdk_port}")
+
+                # Wire llama process for runtime model switching
+                from .http_server import set_llama_process
+                models_dir = self.model_path.parent if self.model_path else None
+                set_llama_process(self._llama, models_dir)
             except Exception as e:
                 log.error(f"Failed to start SDK server: {e}")
                 return False

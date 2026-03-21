@@ -185,6 +185,14 @@ class RunningScreen(Screen):
         self._update_status("server", "llama-server", f"Running on :8080 ({elapsed}s)", "success")
         self._log(f"LLM ready in {elapsed}s", "success")
 
+        # Wire llama process to SDK server for runtime model switching
+        try:
+            from ...http_server import set_llama_process
+            models_dir = app.model_path.parent if app.model_path else None
+            set_llama_process(self._llama_process, models_dir)
+        except Exception:
+            pass  # SDK server may not be running yet in all modes
+
         # Connect backend
         if not app.dev_mode:
             self._update_status("backend", "Backend", "Connecting...", "info")
