@@ -535,15 +535,15 @@ class EmbeddedHTTPServer:
                     content={"error": "Missing 'model' field"},
                 )
 
-            # Security: prevent path traversal
-            if "/" in model_name or "\\" in model_name or ".." in model_name:
+            # Security: resolve and verify path stays inside models_dir
+            model_path = (server.models_dir / model_name).resolve()
+            if model_path.parent != server.models_dir.resolve():
                 return JSONResponse(
                     status_code=400,
                     content={"error": "Invalid model name"},
                 )
 
-            model_path = server.models_dir / model_name
-            if not model_path.exists() or not model_path.suffix == ".gguf":
+            if not model_path.exists() or model_path.suffix != ".gguf":
                 return JSONResponse(
                     status_code=404,
                     content={"error": f"Model '{model_name}' not found"},
@@ -552,6 +552,9 @@ class EmbeddedHTTPServer:
             # Check if already active
             if hasattr(server.llama_process, "model_path") and server.llama_process.model_path.name == model_name:
                 return {"status": "already_active", "model": model_name}
+
+            # Save original model_path for rollback on failure
+            original_model_path = server.llama_process.model_path
 
             try:
                 # Stop current llama-server
@@ -564,21 +567,27 @@ class EmbeddedHTTPServer:
                 # Wait for health check (llama-server takes a few seconds to load model)
                 import httpx
                 llama_url = f"http://127.0.0.1:{server.llama_process.port}/health"
-                for attempt in range(60):  # 60 attempts × 0.5s = 30s timeout
-                    await asyncio.sleep(0.5)
-                    try:
-                        async with httpx.AsyncClient(timeout=2.0) as client:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    for attempt in range(60):  # 60 attempts × 0.5s = 30s timeout
+                        await asyncio.sleep(0.5)
+                        try:
                             resp = await client.get(llama_url)
                             if resp.status_code == 200:
                                 return {"status": "ok", "model": model_name}
-                    except Exception:
-                        continue
+                        except Exception:
+                            continue
 
                 return JSONResponse(
                     status_code=500,
                     content={"error": "Model loaded but health check timed out after 30s"},
                 )
             except Exception as e:
+                # Rollback: restore original model path and try to restart
+                server.llama_process.model_path = original_model_path
+                try:
+                    server.llama_process.start()
+                except Exception:
+                    pass  # Best-effort rollback
                 return JSONResponse(
                     status_code=500,
                     content={"error": f"Failed to reload model: {e}"},
