@@ -28,6 +28,29 @@ def main():
         print(json.dumps(status, indent=2))
         sys.exit(0 if status.get("running") else 1)
 
+    # Handle 'download-llama-server' command - for bundle tool delegation (ADR-0027)
+    if args and args[0] == "download-llama-server":
+        import asyncio
+        from pathlib import Path
+        from .llama_server import download_llama_server
+
+        output_dir = None
+        for i, a in enumerate(args):
+            if a == "--output-dir" and i + 1 < len(args):
+                output_dir = Path(args[i + 1])
+
+        if not output_dir:
+            print("Usage: loreguard download-llama-server --output-dir <path>", file=sys.stderr)
+            sys.exit(1)
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        def on_progress(msg, progress=None):
+            print(f"       {msg}")
+
+        asyncio.run(download_llama_server(progress_callback=on_progress, target_dir=output_dir))
+        sys.exit(0)
+
     # Filter out help flags - these should show CLI help
     if any(a in ('-h', '--help') for a in args):
         from .cli import main as cli_main

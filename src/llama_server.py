@@ -265,18 +265,21 @@ def make_executable(path: Path) -> None:
 
 async def download_llama_server(
     progress_callback: Optional[Callable[[str, DownloadProgress | None], None]] = None,
+    target_dir: Optional[Path] = None,
 ) -> Path:
     """Download and install llama-server for the current platform.
 
     Args:
         progress_callback: Called with (status_message, progress_or_none)
+        target_dir: If provided, install into this directory instead of the default.
+                    Used by the bundle tool to pre-ship llama-server.
 
     Returns:
         Path to the installed llama-server binary
     """
     plat = get_platform()
     config = BINARIES[plat]
-    bin_dir = get_bin_dir()
+    bin_dir = target_dir or get_bin_dir()
 
     def notify(msg: str, progress: DownloadProgress | None = None):
         if progress_callback:
@@ -355,12 +358,12 @@ async def download_llama_server(
                 make_executable(lib)
 
         # Write version marker file for future version checks
-        version_file = get_version_file_path()
+        version_file = bin_dir / ".llama_version" if target_dir else get_version_file_path()
         version_file.write_text(LLAMA_VERSION)
 
         notify(f"llama-server {LLAMA_VERSION} installed successfully!")
 
-    return get_llama_server_path()
+    return bin_dir / config["binary_name"]
 
 
 class LlamaServerProcess:
