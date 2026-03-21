@@ -30,7 +30,7 @@ def _get_templates_dir() -> Path:
     return Path(__file__).parent.parent / "templates"
 
 
-LLAMA_VERSION = "b7789"  # Must match loreguard-engine bundle version
+LLAMA_VERSION = "b8467"  # Must match loreguard-engine bundle version
 
 # Download URLs for each platform
 BINARIES = {
