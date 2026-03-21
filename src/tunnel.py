@@ -81,7 +81,8 @@ class BackendTunnel:
         self.registered = False
         self.backend_version = ""  # Populated from worker_ack
         self._reconnect_delay = 1  # Start with 1 second
-        self._max_reconnect_delay = 60  # Max 60 seconds
+        self._max_reconnect_delay = 3  # Cap at 3s until first successful connection
+        self._has_connected = False  # Tracks if we've ever connected successfully
         self._running = True
         self._shutdown_requested = False
         self._heartbeat_task: asyncio.Task | None = None
@@ -209,6 +210,11 @@ class BackendTunnel:
         self.connected = True
         connection_start = time.time()
         self._log("Connected to backend!", "success")
+
+        # After first successful connection, use longer backoff for reconnections
+        if not self._has_connected:
+            self._has_connected = True
+            self._max_reconnect_delay = 60
 
         # Register as worker
         success, error_reason = await self._register_worker()
