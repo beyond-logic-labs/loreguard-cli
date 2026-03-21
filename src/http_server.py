@@ -573,6 +573,14 @@ class EmbeddedHTTPServer:
                         try:
                             resp = await client.get(llama_url)
                             if resp.status_code == 200:
+                                # Persist selection so it survives restarts
+                                try:
+                                    from .config import LoreguardConfig
+                                    cfg = LoreguardConfig.load()
+                                    cfg.set_model_path(model_path)
+                                    cfg.save()
+                                except Exception:
+                                    pass  # Best-effort persistence
                                 return {"status": "ok", "model": model_name}
                         except Exception:
                             continue
