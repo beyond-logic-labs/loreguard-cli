@@ -12,6 +12,7 @@ from textual.widgets import Input, Static, ListView, ListItem, Label
 from rich.text import Text
 
 from ..styles import PURPLE, CYAN, PINK, FG, FG_DIM, GREEN, RED
+from ...config import get_api_url
 from ..widgets.banner import get_gradient_color
 
 if TYPE_CHECKING:
@@ -227,7 +228,7 @@ class AuthMenuModal(ModalScreen[tuple | None]):
 
         # Update status
         status = self.query_one("#status-line", Static)
-        status.update(Text("Get your token at loreguard.com/dashboard", style=FG_DIM))
+        status.update(Text("Get your token at console.loreguard.com", style=FG_DIM))
 
     def _switch_to_menu(self) -> None:
         """Switch back to menu mode."""
@@ -270,7 +271,7 @@ class AuthMenuModal(ModalScreen[tuple | None]):
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
-                    "https://api.loreguard.com/api/auth/me",
+                    f"{get_api_url()}/api/auth/me",
                     headers={"Authorization": f"Bearer {token}"},
                 )
                 if response.status_code == 200:

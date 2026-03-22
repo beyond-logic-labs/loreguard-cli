@@ -54,6 +54,8 @@ from rich.box import ROUNDED
 from rich.align import Align
 from rich.layout import Layout
 
+from .config import get_api_url, DEFAULT_BACKEND_URL
+
 # Logger instance
 log = logging.getLogger("loreguard")
 
@@ -1044,7 +1046,7 @@ async def step_authentication(app: Optional[TUIApp] = None) -> tuple[Optional[st
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(
-                "https://api.loreguard.com/api/auth/me",
+                f"{get_api_url()}/api/auth/me",
                 headers={"Authorization": f"Bearer {token}"},
             )
             if response.status_code == 200:
@@ -1510,7 +1512,7 @@ async def step_start(
 
             model_id = _resolve_backend_model_id(model_path.stem)
             tunnel = BackendTunnel(
-                backend_url="wss://api.loreguard.com/workers",
+                backend_url=os.getenv("LOREGUARD_BACKEND", DEFAULT_BACKEND_URL),
                 llm_proxy=llm_proxy,
                 worker_id=worker_id,
                 worker_token=token,

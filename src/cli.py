@@ -11,7 +11,8 @@ Environment variables (alternative to args):
     LOREGUARD_MODEL     Path to model file
     LOREGUARD_MODEL_ID  Model ID to download (if not using custom model)
     LOREGUARD_PORT      Local llama-server port (default: 8080)
-    LOREGUARD_BACKEND   Backend URL (default: wss://api.loreguard.com/workers)
+    LOREGUARD_BACKEND   Backend WebSocket URL (default: wss://console.loreguard.com/workers)
+    LOREGUARD_API       API base URL (default: https://console.loreguard.com)
     LOREGUARD_WORKER_ID Worker ID (default: hostname)
 """
 
@@ -25,6 +26,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+from .config import DEFAULT_API_URL, DEFAULT_BACKEND_URL
 
 # Setup logging
 logging.basicConfig(
@@ -44,7 +47,7 @@ class LoreguardCLI:
         model_path: Optional[Path] = None,
         model_id: Optional[str] = None,
         port: int = 8080,
-        backend_url: str = "wss://api.loreguard.com/workers",
+        backend_url: str = DEFAULT_BACKEND_URL,
         worker_id: Optional[str] = None,
         model_family: str = "llama3",
     ):
@@ -454,8 +457,13 @@ Available model IDs:
     )
     parser.add_argument(
         "--backend",
-        default=os.getenv("LOREGUARD_BACKEND", "wss://api.loreguard.com/workers"),
+        default=os.getenv("LOREGUARD_BACKEND", DEFAULT_BACKEND_URL),
         help="Backend WebSocket URL",
+    )
+    parser.add_argument(
+        "--api-url",
+        default=os.getenv("LOREGUARD_API", DEFAULT_API_URL),
+        help=f"API base URL (default: {DEFAULT_API_URL})",
     )
     parser.add_argument(
         "-v", "--verbose",

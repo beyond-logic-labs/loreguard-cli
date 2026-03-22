@@ -17,6 +17,7 @@ from ..widgets.banner import LoreguardBanner
 from ..widgets.hardware_info import HardwareInfo
 from ..widgets.footer import LoreguardFooter
 from ..styles import CYAN, GREEN, YELLOW, RED, FG_DIM
+from ...config import DEFAULT_BACKEND_URL
 
 if TYPE_CHECKING:
     from ..app import LoreguardApp
@@ -256,7 +257,7 @@ class RunningScreen(Screen):
 
                 # Load Dialogue Act Classifier
                 dialogue_act_classifier = None
-                enable_dialogue_act = os.getenv("LOREGUARD_DIALOGUE_ACT_ENABLED", "true").lower() == "true"
+                enable_dialogue_act = os.getenv("LOREGUARD_DIALOGUE_ACT_ENABLED", "false").lower() == "true"
                 if not enable_dialogue_act:
                     self._update_status("dialogue_act", "Dialogue Act", "Disabled", "info")
                     self._log("Dialogue act classifier disabled via LOREGUARD_DIALOGUE_ACT_ENABLED", "info")
@@ -322,7 +323,7 @@ class RunningScreen(Screen):
                 model_id = app.model_path.stem
 
                 self._tunnel = BackendTunnel(
-                    backend_url="wss://api.loreguard.com/workers",
+                    backend_url=os.getenv("LOREGUARD_BACKEND", DEFAULT_BACKEND_URL),
                     llm_proxy=llm_proxy,
                     worker_id=app.worker_id,
                     worker_token=app.api_token,

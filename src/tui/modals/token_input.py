@@ -59,7 +59,7 @@ class TokenInputModal(ModalScreen[str | None]):
         """Compose the modal layout."""
         with Vertical():
             yield Static("Enter API Token", classes="modal-title")
-            yield Static("Get your token at loreguard.com/dashboard", classes="modal-hint")
+            yield Static("Get your token at console.loreguard.com", classes="modal-hint")
             yield Input(placeholder="Paste your token here...", password=True, id="token-input")
             yield Static("enter submit • esc cancel", classes="modal-footer")
 

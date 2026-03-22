@@ -16,6 +16,7 @@ from ..widgets.banner import LoreguardBanner
 from ..widgets.hardware_info import HardwareInfo
 from ..widgets.footer import LoreguardFooter
 from ..styles import CYAN, PINK, GREEN, RED, FG_DIM
+from ...config import get_api_url
 
 if TYPE_CHECKING:
     from ..app import LoreguardApp
@@ -115,7 +116,7 @@ class AuthScreen(Screen):
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
-                    "https://api.loreguard.com/api/auth/me",
+                    f"{get_api_url()}/api/auth/me",
                     headers={"Authorization": f"Bearer {token}"},
                 )
                 if response.status_code == 200:

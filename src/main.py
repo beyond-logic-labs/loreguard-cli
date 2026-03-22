@@ -31,7 +31,7 @@ from rich.console import Console
 
 from .tunnel import BackendTunnel
 from .llm import LLMProxy
-from .config import get_config_value, resolve_model_path
+from .config import get_config_value, resolve_model_path, DEFAULT_BACKEND_URL
 from .nli import NLIService, is_nli_model_available
 from .intent_classifier import IntentClassifier, is_intent_model_available
 from .dialogue_act_classifier import (
@@ -118,7 +118,7 @@ async def startup():
         console.print("[yellow]Intent classifier disabled (set LOREGUARD_INTENT_ENABLED=true to enable)[/yellow]")
 
     # Initialize dialogue act classifier (optional, for filler selection)
-    enable_dialogue_act = os.getenv("LOREGUARD_DIALOGUE_ACT_ENABLED", "true").lower() == "true"
+    enable_dialogue_act = os.getenv("LOREGUARD_DIALOGUE_ACT_ENABLED", "false").lower() == "true"
     if enable_dialogue_act:
         console.print("[cyan]Initializing dialogue act classifier...[/cyan]")
         if is_dialogue_act_model_available():
@@ -170,7 +170,7 @@ async def startup():
             chunk_detector = None
 
     # Connect to remote backend
-    backend_url = get_config_value("BACKEND_URL", "wss://api.lorekeeper.ai/workers")
+    backend_url = get_config_value("BACKEND_URL", DEFAULT_BACKEND_URL)
     worker_id = get_config_value("WORKER_ID", "")
     worker_token = get_config_value("WORKER_TOKEN", "")
     model_id = get_config_value("MODEL_ID", "default")

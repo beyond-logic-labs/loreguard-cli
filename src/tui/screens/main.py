@@ -16,7 +16,7 @@ from ..widgets.hardware_info import HardwareInfo
 from ..widgets.server_monitor import ServerMonitor
 from ..widgets.npc_chat import NPCChat
 from ..widgets.footer import LoreguardFooter
-from ...config import LoreguardConfig
+from ...config import LoreguardConfig, get_api_url, DEFAULT_BACKEND_URL
 
 if TYPE_CHECKING:
     from ..app import LoreguardApp
@@ -450,7 +450,7 @@ class MainScreen(Screen):
                     self._log(f"Still loading... ({elapsed}s)")
 
                 # Check if process died
-                if app._llama_process.process and app._llama_process.process.poll() is not None:
+                if app._llama_process and app._llama_process.process and app._llama_process.process.poll() is not None:
                     self._log("llama-server process died", "error")
                     break
 
@@ -548,7 +548,7 @@ class MainScreen(Screen):
 
             # Load dialogue act classifier (filler selection) - run in thread pool
             dialogue_act_classifier = None
-            enable_dialogue_act = os.getenv("LOREGUARD_DIALOGUE_ACT_ENABLED", "true").lower() == "true"
+            enable_dialogue_act = os.getenv("LOREGUARD_DIALOGUE_ACT_ENABLED", "false").lower() == "true"
             if not enable_dialogue_act:
                 self._log("Dialogue act classifier disabled via LOREGUARD_DIALOGUE_ACT_ENABLED")
             else:
@@ -649,7 +649,7 @@ class MainScreen(Screen):
                     self._update_connection_status("connecting")
 
             app._tunnel = BackendTunnel(
-                backend_url="wss://api.loreguard.com/workers",
+                backend_url=os.getenv("LOREGUARD_BACKEND", DEFAULT_BACKEND_URL),
                 llm_proxy=llm_proxy,
                 worker_id=app.worker_id,
                 worker_token=app.api_token,
@@ -851,7 +851,7 @@ class MainScreen(Screen):
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
-                    "https://api.loreguard.com/api/characters",
+                    f"{get_api_url()}/api/characters",
                     headers={"Authorization": f"Bearer {app.api_token}"},
                 )
 
@@ -862,7 +862,7 @@ class MainScreen(Screen):
                     npcs = [c for c in characters if c.get("type") != "world"]
 
                     if not npcs:
-                        self._update_status("No NPCs registered. Create NPCs at loreguard.com first.")
+                        self._update_status("No NPCs registered. Create NPCs at console.loreguard.com first.")
                         return
 
                     # Create NPC items

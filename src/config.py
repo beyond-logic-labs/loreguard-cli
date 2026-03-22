@@ -50,6 +50,7 @@ class LoreguardConfig:
     context_size: int = 16384  # llama-server context window size (configurable per game)
     max_speech_tokens: int = 50  # Max tokens for NPC speech output (Pass 4). Default: 50 (~40 words)
     model_family: str = "auto"  # Model family profile (auto, llama3, qwen3, gemma, chatml)
+    dialogue_act_enabled: bool = False  # Dialogue act classifier for filler selection
 
     def save(self) -> None:
         """Save configuration to disk."""
@@ -73,6 +74,7 @@ class LoreguardConfig:
                     context_size=data.get("context_size", 16384),
                     max_speech_tokens=data.get("max_speech_tokens", 50),
                     model_family=data.get("model_family", "auto"),
+                    dialogue_act_enabled=data.get("dialogue_act_enabled", False),
                 )
             except (json.JSONDecodeError, KeyError):
                 pass
@@ -121,6 +123,14 @@ class LoreguardConfig:
 # Environment Variable Configuration
 # =============================================================================
 
+DEFAULT_API_URL = "https://console.loreguard.com"
+DEFAULT_BACKEND_URL = "wss://console.loreguard.com/workers"
+
+
+def get_api_url() -> str:
+    """Get the Loreguard API base URL (configurable via LOREGUARD_API env var)."""
+    return os.getenv("LOREGUARD_API", DEFAULT_API_URL)
+
 
 @lru_cache(maxsize=1)
 def load_config() -> dict:
@@ -133,12 +143,13 @@ def load_config() -> dict:
     return {
         # Server settings
         "LLM_ENDPOINT": os.getenv("LLM_ENDPOINT", "http://localhost:8080"),
-        "BACKEND_URL": os.getenv("LOREGUARD_BACKEND", "wss://api.loreguard.com/workers"),
+        "BACKEND_URL": os.getenv("LOREGUARD_BACKEND", DEFAULT_BACKEND_URL),
+        "API_URL": os.getenv("LOREGUARD_API", DEFAULT_API_URL),
         "HOST": os.getenv("HOST", "127.0.0.1"),
         "PORT": os.getenv("PORT", "8081"),
 
         # Worker authentication (required for backend connection)
-        # Get API token from loreguard.com dashboard
+        # Get API token from console.loreguard.com
         "WORKER_ID": os.getenv("LOREGUARD_WORKER_ID", os.getenv("WORKER_ID", "")),
         # LOREGUARD_TOKEN is preferred, WORKER_TOKEN kept for backwards compatibility
         "LOREGUARD_TOKEN": os.getenv("LOREGUARD_TOKEN", os.getenv("WORKER_TOKEN", "")),
@@ -232,20 +243,21 @@ def get_models_dir() -> Optional[Path]:
 
 
 def resolve_model_path(model_name: str, subdir: str = "") -> str:
-    """Resolve a model path, preferring pre-shipped models over HF downloads.
+    """Resolve a model path, preferring local models over HF downloads.
 
     Resolution order:
     1. LOREGUARD_MODELS_DIR/<subdir>  (explicit override)
-    2. Bundle models dir using manifest.txt  (HF name → manifest key → local dir)
-    3. Bundle models dir using HF name → org--model convention  (fallback)
-    4. Original HF model name  (download from HuggingFace)
+    2. Application Support models dir/<subdir>  (standard install location)
+    3. Bundle models dir using manifest.txt  (HF name → manifest key → local dir)
+    4. Bundle models dir using HF name → org--model convention  (fallback)
+    5. Download from HuggingFace to Application Support models dir
 
     Args:
         model_name: HuggingFace model name (e.g., 'vectara/hallucination_evaluation_model')
         subdir: Subdirectory within MODELS_DIR to check (e.g., 'hhem', 'deberta')
 
     Returns:
-        Local path if pre-shipped model found, otherwise the original HF model name.
+        Local path to the model directory.
     """
     # 1. Explicit LOREGUARD_MODELS_DIR/<subdir>
     explicit_dir = get_config_value("MODELS_DIR")
@@ -254,7 +266,14 @@ def resolve_model_path(model_name: str, subdir: str = "") -> str:
         if local_path.exists() and any(local_path.iterdir()):
             return str(local_path)
 
-    # 2 & 3. Bundle directory resolution
+    # 2. Application Support models dir/<subdir>
+    app_models = get_data_dir() / "models"
+    if subdir:
+        local_path = app_models / subdir
+        if local_path.exists() and any(local_path.iterdir()):
+            return str(local_path)
+
+    # 3 & 4. Bundle directory resolution
     bundle_dir = get_bundle_dir()
     if bundle_dir:
         bundle_models = bundle_dir / "models"
@@ -275,7 +294,35 @@ def resolve_model_path(model_name: str, subdir: str = "") -> str:
         if local_path.exists() and any(local_path.iterdir()):
             return str(local_path)
 
+    # 5. Download from HuggingFace to Application Support models dir
+    if subdir:
+        return _download_hf_model(model_name, app_models / subdir)
+
     return model_name
+
+
+def _download_hf_model(model_name: str, target_dir: Path) -> str:
+    """Download a HuggingFace model to the loreguard models directory.
+
+    Returns:
+        Path to the downloaded model directory.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        from huggingface_hub import snapshot_download
+        target_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Downloading {model_name} to {target_dir}")
+        snapshot_download(
+            model_name,
+            local_dir=str(target_dir),
+            local_dir_use_symlinks=False,
+        )
+        logger.info(f"Downloaded {model_name} to {target_dir}")
+        return str(target_dir)
+    except Exception as e:
+        logger.warning(f"Failed to download {model_name}: {e}")
+        return model_name
 
 
 def get_config_value(key: str, default: Optional[str] = None) -> Optional[str]:

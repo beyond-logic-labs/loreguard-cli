@@ -15,6 +15,7 @@ Rate Limits (when using Player JWT):
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -35,8 +36,9 @@ from .term_ui import (
 # Configure module logger
 logger = logging.getLogger(__name__)
 
-# Loreguard API base URL
-LOREGUARD_API_URL = "https://api.loreguard.com"
+# Loreguard API base URL (configurable via LOREGUARD_API env var)
+from .config import get_api_url
+LOREGUARD_API_URL = get_api_url()
 
 
 @dataclass
@@ -407,7 +409,7 @@ class NPCChat:
                 raise Exception("Invalid API token - please check your authentication")
             elif e.response.status_code == 404:
                 logger.warning("No characters found for this account")
-                raise Exception("No characters found - register NPCs at loreguard.com first")
+                raise Exception("No characters found - register NPCs at console.loreguard.com first")
             logger.error("HTTP error fetching characters: %d", e.response.status_code)
             raise
         except httpx.RequestError as e:
@@ -428,7 +430,7 @@ class NPCChat:
             return None
 
         if not characters:
-            print_error("No NPCs registered. Create NPCs at loreguard.com first.")
+            print_error("No NPCs registered. Create NPCs at console.loreguard.com first.")
             return None
 
         items = [
@@ -642,7 +644,7 @@ async def run_npc_chat(
     Args:
         api_token: Loreguard API token for authentication (for server-side use)
         player_jwt: Player JWT from Steam exchange (for game clients)
-        base_url: Loreguard API base URL (default: https://api.loreguard.com)
+        base_url: Loreguard API base URL (default: https://console.loreguard.com)
         config: Optional client configuration for timeouts
         verbose: If True, show pipeline pass updates via WebSocket
         tunnel: BackendTunnel instance for receiving pass_update messages (required for verbose)

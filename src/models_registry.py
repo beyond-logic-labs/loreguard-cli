@@ -92,6 +92,18 @@ SUPPORTED_MODELS: list[ModelInfo] = [
         hardware="32GB RAM • 20GB VRAM",
         recommended=False,
     ),
+    ModelInfo(
+        id="qwen3.5-9b-q4km",
+        name="Qwen 3.5 9B Q4_K_M",
+        filename="Qwen3.5-9B-Q4_K_M.gguf",
+        size_gb=5.2,
+        size_bytes=5_627_044_256,
+        context_length=32768,
+        url="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf",
+        description="Strong general model. 32K context, good reasoning.",
+        hardware="12GB RAM • 8GB VRAM",
+        recommended=False,
+    ),
 ]
 
 

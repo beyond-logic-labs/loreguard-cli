@@ -123,7 +123,7 @@ class BackendTunnel:
         """Establish and maintain connection to backend with auto-reconnect."""
         if not self.worker_id or not self.worker_token:
             self._log("Error: Worker ID and API token are required", "error")
-            self._log("Get an API token from loreguard.com dashboard", "warn")
+            self._log("Get an API token from console.loreguard.com", "warn")
             return
 
         last_error = ""

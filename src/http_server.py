@@ -367,7 +367,7 @@ class EmbeddedHTTPServer:
 
             # Derive HTTP base URL from WebSocket URL
             # ws://localhost:8090/workers → http://localhost:8090
-            # wss://api.loreguard.com/workers → https://api.loreguard.com
+            # wss://console.loreguard.com/workers → https://console.loreguard.com
             backend_ws = server.tunnel.backend_url
             if backend_ws.startswith("wss://"):
                 base_url = "https://" + backend_ws[6:].split("/")[0]

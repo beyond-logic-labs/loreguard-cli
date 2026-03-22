@@ -284,7 +284,7 @@ class UnifiedPaletteModal(ModalScreen[tuple[str, Any] | None]):
         # Add models
         if self._show_models:
             from ...llama_server import get_models_dir
-            from ...models_registry import SUPPORTED_MODELS
+            from ...models_registry import SUPPORTED_MODELS, ModelInfo
             from ...hf_discovery import discover_models
             from ..widgets.hardware_info import detect_hardware
 
@@ -301,6 +301,33 @@ class UnifiedPaletteModal(ModalScreen[tuple[str, Any] | None]):
                     all_models = list(SUPPORTED_MODELS)
             except Exception:
                 all_models = list(SUPPORTED_MODELS)
+
+            # Ensure all static registry models are included
+            known_filenames = {m.filename for m in all_models}
+            for model in SUPPORTED_MODELS:
+                if model.filename not in known_filenames:
+                    all_models.append(model)
+                    known_filenames.add(model.filename)
+
+            # Scan local models dir for GGUF files not in registry/discovery
+            if self._models_dir and self._models_dir.exists():
+                for gguf_file in self._models_dir.glob("*.gguf"):
+                    if gguf_file.name not in known_filenames:
+                        size_bytes = gguf_file.stat().st_size
+                        size_gb = size_bytes / (1024 ** 3)
+                        stem = gguf_file.stem
+                        all_models.append(ModelInfo(
+                            id=f"local-{stem.lower()}",
+                            name=stem.replace("-", " ").replace("_", " "),
+                            filename=gguf_file.name,
+                            size_gb=round(size_gb, 1),
+                            size_bytes=size_bytes,
+                            context_length=8192,
+                            url="",
+                            description="Local model",
+                            hardware="",
+                        ))
+                        known_filenames.add(gguf_file.name)
 
             # Sort: most recent first, then by size descending
             def model_sort_key(m):

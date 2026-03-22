@@ -328,6 +328,26 @@ class NLIService:
 
             return results
 
+    def _resolve_model_dir(self) -> Optional[str]:
+        """Resolve the actual directory containing model files.
+
+        For local paths, returns as-is. For HuggingFace repo IDs (e.g.
+        'vectara/hallucination_evaluation_model'), resolves the cache snapshot dir.
+        """
+        if os.path.isdir(self._model_path):
+            return self._model_path
+        try:
+            from huggingface_hub import snapshot_download
+            return snapshot_download(self._model_path, local_files_only=True)
+        except Exception:
+            # Cache miss — trigger a download so the snapshot exists
+            try:
+                from huggingface_hub import snapshot_download
+                return snapshot_download(self._model_path)
+            except Exception as e:
+                logger.warning(f"Could not resolve model dir for {self._model_path}: {e}")
+                return None
+
     def _patch_hhem_model_files(self):
         """Patch vendored HHEM files for transformers 5.x compatibility.
 
@@ -336,8 +356,31 @@ class NLIService:
         2. Is stricter about model_type matching between config.json and config class
         Since trust_remote_code loads the .py files directly, we patch before loading.
         """
+        model_dir = self._resolve_model_dir()
+        if not model_dir:
+            logger.warning("Cannot resolve model directory for patching")
+            return
+
+        # Also patch the modules cache (transformers copies .py files there)
+        modules_dirs = [model_dir]
+        modules_cache = os.path.join(
+            os.path.expanduser("~"), ".cache", "huggingface", "modules",
+            "transformers_modules",
+        )
+        if os.path.isdir(modules_cache):
+            for root, dirs, files in os.walk(modules_cache):
+                if "modeling_hhem_v2.py" in files:
+                    modules_dirs.append(root)
+
+        for patch_dir in modules_dirs:
+            self._patch_dir(patch_dir)
+
+    def _patch_dir(self, patch_dir: str):
+        """Apply HHEM patches to a single directory."""
         # Patch 1: modeling_hhem_v2.py — add missing class attributes
-        model_file = os.path.join(self._model_path, "modeling_hhem_v2.py")
+        model_file = os.path.join(patch_dir, "modeling_hhem_v2.py")
+        if not os.path.exists(model_file):
+            return
         if os.path.exists(model_file):
             try:
                 content = open(model_file, "r").read()
@@ -354,13 +397,18 @@ class NLIService:
                     if patched != content:
                         with open(model_file, "w") as f:
                             f.write(patched)
-                        logger.info("Patched modeling_hhem_v2.py for transformers 5.x")
+                        # Clear __pycache__ so patched file is reloaded
+                        pycache = os.path.join(patch_dir, "__pycache__")
+                        if os.path.isdir(pycache):
+                            import shutil
+                            shutil.rmtree(pycache)
+                        logger.info(f"Patched {model_file} for transformers 5.x")
             except Exception as e:
                 logger.warning(f"Could not patch modeling_hhem_v2.py: {e}")
 
         # Patch 2: config.json — fix model_type mismatch
         # config.json has "HHEMv2Config" but the config class defines model_type = "HHEMv2"
-        config_file = os.path.join(self._model_path, "config.json")
+        config_file = os.path.join(patch_dir, "config.json")
         if os.path.exists(config_file):
             try:
                 content = open(config_file, "r").read()
@@ -378,8 +426,8 @@ class NLIService:
         # Patch 3: configuration_hhem_v2.py — use local flan-t5-base instead of HuggingFace
         # The HHEM model downloads google/flan-t5-base config+tokenizer at init.
         # If we've bundled those files locally, rewrite the foundation path.
-        config_py = os.path.join(self._model_path, "configuration_hhem_v2.py")
-        local_foundation = os.path.join(self._model_path, "flan-t5-base")
+        config_py = os.path.join(patch_dir, "configuration_hhem_v2.py")
+        local_foundation = os.path.join(patch_dir, "flan-t5-base")
         if os.path.exists(config_py) and os.path.isdir(local_foundation):
             try:
                 content = open(config_py, "r").read()

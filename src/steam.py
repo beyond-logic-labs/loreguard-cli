@@ -12,7 +12,7 @@ Usage:
         read_timeout=15.0,
         max_retries=3
     )
-    steam_auth = SteamAuth(api_url="https://api.loreguard.com", config=config)
+    steam_auth = SteamAuth(api_url="https://console.loreguard.com", config=config)
 
     # Exchange Steam ticket for Player JWT
     result = await steam_auth.exchange_ticket(
@@ -40,8 +40,9 @@ import httpx
 # Configure module logger
 logger = logging.getLogger(__name__)
 
-# Default Loreguard API URL
-LOREGUARD_API_URL = "https://api.loreguard.com"
+# Default Loreguard API URL (configurable via LOREGUARD_API env var)
+from .config import get_api_url
+LOREGUARD_API_URL = get_api_url()
 
 # Validation patterns
 STEAM_APP_ID_PATTERN = re.compile(r"^\d{1,10}$")

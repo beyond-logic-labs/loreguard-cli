@@ -61,7 +61,9 @@ class LLMRequest:
     stop: list[str] = field(default_factory=lambda: DEFAULT_STOP_SEQUENCES.copy())
 
     # Thinking mode control (for Qwen3)
-    disable_thinking: bool = False
+    # Defaults to True: thinking wastes tokens and breaks pipelines.
+    # Only enable explicitly when extended reasoning is desired.
+    disable_thinking: bool = True
 
     # If true, error if content is empty instead of falling back to reasoning_content
     require_content: bool = False
@@ -257,9 +259,10 @@ class LLMProxy:
             payload["id_slot"] = 0
             logger.info("KV cache: cache_prompt=true, id_slot=0 (verify -np 1 on server)")
 
-        # Disable thinking mode if requested (for Qwen3)
+        # Disable thinking mode (for Qwen3/3.5).
+        # Must use chat_template_kwargs — top-level enable_thinking is ignored by llama.cpp b8467+.
         if req.disable_thinking:
-            payload["enable_thinking"] = False
+            payload.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
 
         # Note: JSON mode is not compatible with streaming in llama.cpp
         # If force_json is requested, fall back to non-streaming
@@ -573,9 +576,10 @@ class LLMProxy:
             payload["id_slot"] = 0
             logger.info("KV cache: cache_prompt=true, id_slot=0 (verify -np 1 on server)")
 
-        # Disable thinking mode if requested (for Qwen3)
+        # Disable thinking mode (for Qwen3/3.5).
+        # Must use chat_template_kwargs — top-level enable_thinking is ignored by llama.cpp b8467+.
         if req.disable_thinking:
-            payload["enable_thinking"] = False
+            payload.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
 
         # Force JSON output if requested
         if req.force_json:

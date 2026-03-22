@@ -6,6 +6,7 @@ Uses the local proxy for NPC conversations with token streaming:
 
 import json
 import logging
+import os
 from typing import TYPE_CHECKING
 
 import httpx
@@ -23,8 +24,9 @@ from ...runtime import RuntimeInfo
 if TYPE_CHECKING:
     from ..app import LoreguardApp
 
-# Fallback to cloud API if local proxy unavailable
-LOREGUARD_API_URL = "https://api.loreguard.com"
+# Fallback to cloud API if local proxy unavailable (configurable via LOREGUARD_API env var)
+from ...config import get_api_url
+LOREGUARD_API_URL = get_api_url()
 
 
 def get_local_proxy_url() -> str | None:
