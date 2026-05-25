@@ -19,6 +19,10 @@ We needed to answer, with real measurements on consumer hardware:
 3. Does prompt caching (the ADR-0014 cognitive-context reuse) hold up under
    concurrency, and what does it buy?
 4. Which KV cache type should we default to?
+5. What is the real end-to-end latency of a full multi-pass NPC turn, with and
+   without prompt caching?
+6. Which model gives the best quality/grounding per token — the 26B MoE (Gemma)
+   or a dense 14B (Qwen3)?
 
 All benchmarks below were run on **RTX 5080 (16 GB, Blackwell sm_120), WSL2 /
 Ubuntu, CUDA 13.2 llama.cpp build (`d161ea7`)**, using the model we target,
@@ -119,6 +123,67 @@ rule does **not** hold here. q8_0 is the only quantized KV that stays coherent �
 hence the `q8_0` default. (KV type is configurable, so other models can opt into
 smaller KV if they tolerate it.)
 
+### Table 5 — Real multi-pass NPC turn latency (Gemma-26B, q8_0, real engine prompts)
+
+A turn = Pass 2 (think) + Pass 4 (speak) + Pass 4.5 (review), run via the engine's
+`cmd/pipeline` against `llama-server`, character "zero" (~750-token cognitive context),
+realistic per-pass token caps (256 / 50 / 80):
+
+| | 1 user | 10 simultaneous |
+|---|---:|---:|
+| Pass 2 (think, 256 tok) | 2.5 s | 12.0 s |
+| Pass 4 (speak, 50 tok) | 0.9 s | 7.1 s |
+| Pass 4.5 (review, 80 tok) | 1.2 s | 6.2 s |
+| **Full turn** | **4.5 s** | **~25 s** (p50≈p90) |
+
+The 10-simultaneous case is **decode-contention bound** (~19 tok/s/user at 10-way) —
+prompt caching does **not** fix this (caching saves prefill, not decode). 10 truly
+concurrent is worst-case; real effective concurrency is lower (users think between
+turns), so ~3–5 active gives ~8–12 s/turn.
+
+### Table 6 — Multi-turn WITH prompt caching (single user, 6-turn thread)
+
+`-np 1` (llama.cpp auto prefix caching), streaming for TTFT:
+
+| Metric | Gemma-4-26B (Q3 SWA) | Qwen3-14B (Q4 dense) |
+|---|---:|---:|
+| Decode speed | **~130 tok/s** | ~84 tok/s |
+| TTFT cold (turn 1) | 303 ms | 274 ms |
+| TTFT cached (turn 2+) | **~110 ms** | ~60 ms |
+| TTFT p50 / p90 | 110 / 303 ms | 60 / 274 ms |
+| `cached_tokens` over turns | 0 → 792 → 1072 ✅ | 0 → 775 → 1046 ✅ |
+
+**Caching confirmed:** `cached_tokens` jumps on turn 2+ and TTFT drops ~3–5x vs the
+cold turn 1 — llama.cpp reuses the cached prefix automatically (no flag). Here the
+context is small (~800 tok) so the saving is ~200 ms/turn; at the target **4–16k
+contexts it is seconds/turn**. **Gemma decodes faster than the dense 14B (130 vs 84
+tok/s)** because it is a 4B-active MoE (sparsity), despite being "26B". With caching a
+Gemma NPC turn is **sub-second single-user** (TTFT ~110 ms + ~30–50 tok @ 130 tok/s).
+
+### Table 7 — Model quality / grounding (6-turn FAIRVIEW thread, character "zero")
+
+| | Gemma-4-26B | Qwen3-14B |
+|---|---|---|
+| Voice (lowercase, terse, no metaphor) | ✅ | ⚠️ used a metaphor ("it's a door") |
+| Trust-gated secrets | ✅ deflected personal Qs; never named the gated secret | ❌ leaked "Phantom" (inner-circle) to a low-trust recruit |
+| Grounding / memory | ✅ recalled a working-memory detail ("the relay") | — |
+| Hallucinated facts | none | none |
+
+**Gemma is better on quality AND faster** — it respected voice and trust-gated
+knowledge (the product's "NPCs only say what they know" premise) while Qwen leaked a
+gated character secret. **Recommendation: Gemma-4-26B-A4B is the default model;**
+Qwen-14B is only a faster-TTFT fallback where the 26B can't fit.
+
+### Operational gotchas
+
+- **Gemma 4 has thinking ON by default** → `/v1/chat/completions` returns empty
+  `content` (the text goes to `reasoning_content`) unless the request sends
+  `chat_template_kwargs:{enable_thinking:false}`. Keep thinking disabled for the pipeline.
+- **q5_1 / q4_0 KV degrade Gemma to gibberish** (Table 4) → keep `q8_0`.
+- **`-np` must match real concurrency for MoE:** with `-np 32` but only ~10 active,
+  Gemma throughput collapsed (MoE expert-scatter under a large slot pool). Set
+  `LOREGUARD_PARALLEL_SLOTS` to the *expected active* concurrency, not a max.
+
 ## Consequences
 
 - Default behavior unchanged for existing single-session installs (`-np 1`), but
@@ -133,3 +198,19 @@ smaller KV if they tolerate it.)
   calling client / dispatcher.
 - Slot count should be chosen per GPU VRAM (and KV type); auto-detection from
   `hardware_info` is a possible future enhancement.
+
+### Ready for P2P worker deployment
+
+A 16 GB node serving the NPC pipeline should run:
+
+```
+LOREGUARD_PARALLEL_SLOTS=4   # 4–8 active sessions; raise only with spare VRAM/compute
+LOREGUARD_KV_CACHE_TYPE=q8_0 # keep q8_0 (lower bits = gibberish on Gemma)
+# model: gemma-4-26B-A4B-it UD-Q3_K_XL ; thinking disabled (enable_thinking=false)
+```
+
+This gives ~4.5 s/turn single-user and sub-second cached turns, holding Gemma's
+quality/grounding edge. The one remaining piece for a multi-session worker is the
+**session→slot LRU dispatcher** (assign live sessions to the N slots, `id_slot` per
+request, and `/slots` save/restore to park idle sessions on disk) — that lives in
+the calling client / dispatcher, not in this CLI.
