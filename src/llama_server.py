@@ -398,14 +398,14 @@ class LlamaServerProcess:
             except ValueError:
                 parallel_slots = 1
         self.parallel_slots = max(1, parallel_slots)
-        # KV cache data type (-ctk/-ctv). Default "f16" = llama-server default (no extra
-        # flags, byte-identical to before). Set a quantized type (q8_0, q5_1, q4_0, ...)
-        # via LOREGUARD_KV_CACHE_TYPE to roughly halve/quarter KV memory — essential when
-        # serving many parallel_slots. Quantized KV requires flash attention, so -fa on is
-        # enabled automatically in that case.
+        # KV cache data type (-ctk/-ctv). Default "q8_0": near-lossless and ~half the KV
+        # memory of f16, which is what lets many parallel_slots fit in VRAM. Quantized KV
+        # requires flash attention, so -fa on is enabled automatically. Override via
+        # LOREGUARD_KV_CACHE_TYPE — e.g. "q5_1"/"q4_0" for even smaller KV, or "f16" to
+        # disable quantization (full-precision KV, no flash-attn flag).
         if kv_cache_type is None:
-            kv_cache_type = os.environ.get("LOREGUARD_KV_CACHE_TYPE", "f16")
-        self.kv_cache_type = kv_cache_type or "f16"
+            kv_cache_type = os.environ.get("LOREGUARD_KV_CACHE_TYPE", "q8_0")
+        self.kv_cache_type = kv_cache_type or "q8_0"
         self.process: Optional[subprocess.Popen] = None
         self._output_lines: list[str] = []
 
