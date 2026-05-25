@@ -376,12 +376,27 @@ class LlamaServerProcess:
         lora_path: Optional[Path] = None,
         context_size: int = 16384,
         model_family: str = "llama3",
+        parallel_slots: Optional[int] = None,
     ):
         self.model_path = model_path
         self.port = port
         self.lora_path = lora_path
         self.context_size = context_size
         self.model_family = model_family
+        # Number of concurrent llama-server slots (sessions).
+        # Default 1 preserves the ADR-0014 single-slot / slot-0 pinning behavior
+        # (minimal VRAM). This is a server/dev knob: raise it via the
+        # LOREGUARD_PARALLEL_SLOTS env var (or the explicit arg) on nodes with spare
+        # VRAM that serve multiple sessions concurrently (e.g. netshell P2P workers).
+        # Each slot is given the full `context_size`, so total KV scales linearly:
+        # total_context = context_size * parallel_slots. With SWA models (e.g. Gemma)
+        # per-slot KV is small, so many slots fit even on 16 GB GPUs.
+        if parallel_slots is None:
+            try:
+                parallel_slots = int(os.environ.get("LOREGUARD_PARALLEL_SLOTS", "1"))
+            except ValueError:
+                parallel_slots = 1
+        self.parallel_slots = max(1, parallel_slots)
         self.process: Optional[subprocess.Popen] = None
         self._output_lines: list[str] = []
 
@@ -394,23 +409,27 @@ class LlamaServerProcess:
         if not server_path.exists():
             raise RuntimeError("llama-server not installed")
 
+        # llama-server splits -c (total context) evenly across -np slots, so to give
+        # each slot the full context_size we request context_size * parallel_slots total.
+        total_context = self.context_size * self.parallel_slots
+
         # Build command
         cmd = [
             str(server_path),
             "-m", str(self.model_path),
             "--port", str(self.port),
             "--host", "127.0.0.1",
-            "-c", str(self.context_size),  # Context length (configurable per game)
+            "-c", str(total_context),  # total KV; each of the -np slots gets context_size
             "-ngl", "99",   # GPU layers (use all)
             # ADR-0014: Enable slot save/restore for disk-based KV cache persistence
             # This allows saving warmup context to disk and restoring across messages
             "--slots",  # Enable /slots API endpoint (required for save/restore)
             "--slot-save-path", str(get_slot_cache_dir()),
-            # ADR-0014: Force single slot when slot caching is enabled
-            # This minimizes VRAM usage and ensures slot 0 pinning works correctly.
-            # Without this, llama-server may allocate multiple slots, each consuming
-            # KV cache memory proportional to context_size * model_hidden_dim.
-            "-np", "1",
+            # Concurrent slots. Default 1 keeps the ADR-0014 single-slot / slot-0
+            # pinning behavior (minimal VRAM). Raise via LOREGUARD_PARALLEL_SLOTS to
+            # serve multiple sessions at once (e.g. netshell workers); callers then
+            # target a slot per session through the request's id_slot field.
+            "-np", str(self.parallel_slots),
             # Enable Jinja template processing (required for both custom and embedded templates)
             "--jinja",
         ]
