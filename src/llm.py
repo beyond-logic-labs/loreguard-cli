@@ -6,8 +6,6 @@ Supports llama-server's OpenAI-compatible /v1/chat/completions API with:
 - Thinking mode control (enable_thinking for Qwen3)
 - JSON schema/response_format for structured output
 - Thinking tag extraction (<think>...</think>)
-
-Based on netshell's local_llm.go implementation.
 """
 
 import json
@@ -76,6 +74,12 @@ class LLMRequest:
     # When True, llama-server will cache the prompt prefix (system message)
     # and reuse it across requests with identical prefixes.
     cache_prompt: bool = False
+
+    # Target llama-server slot for this request. Default 0 keeps the ADR-0014
+    # single-slot behavior. When the server runs with LOREGUARD_PARALLEL_SLOTS > 1,
+    # callers assign a slot per session (the client maps session -> slot) so
+    # concurrent sessions each keep their own cached cognitive context.
+    id_slot: int = 0
 
 
 @dataclass
@@ -251,13 +255,12 @@ class LLMProxy:
         # ADR-0014: Enable KV cache prefix sharing for warmup context
         if req.cache_prompt:
             payload["cache_prompt"] = True
-            # Pin to slot 0 to ensure save/restore targets the correct slot.
-            # With -np 1 (enforced when slot caching enabled), this is redundant
-            # but kept for explicitness and defense-in-depth.
-            # NOTE: llama-server must be started with -np 1 for VRAM efficiency;
-            # id_slot alone does not prevent multi-slot allocation.
-            payload["id_slot"] = 0
-            logger.info("KV cache: cache_prompt=true, id_slot=0 (verify -np 1 on server)")
+            # Target the request's slot so save/restore and prefix-cache reuse hit
+            # the right session. With the default single slot (LOREGUARD_PARALLEL_SLOTS
+            # unset) this is always slot 0; with multiple slots, callers set req.id_slot
+            # per session so concurrent sessions keep their own cached cognitive context.
+            payload["id_slot"] = req.id_slot
+            logger.info(f"KV cache: cache_prompt=true, id_slot={req.id_slot}")
 
         # Disable thinking mode (for Qwen3/3.5).
         # Must use chat_template_kwargs — top-level enable_thinking is ignored by llama.cpp b8467+.
@@ -535,6 +538,7 @@ class LLMProxy:
             force_json=d.get("force_json", False),
             json_schema=d.get("json_schema"),
             cache_prompt=d.get("cache_prompt", False),  # ADR-0014: KV cache prefix sharing
+            id_slot=int(d.get("id_slot", 0)),  # target slot when LOREGUARD_PARALLEL_SLOTS > 1
         )
 
     async def _generate_llamacpp(self, req: LLMRequest) -> dict:
@@ -568,13 +572,12 @@ class LLMProxy:
         # ADR-0014: Enable KV cache prefix sharing for warmup context
         if req.cache_prompt:
             payload["cache_prompt"] = True
-            # Pin to slot 0 to ensure save/restore targets the correct slot.
-            # With -np 1 (enforced when slot caching enabled), this is redundant
-            # but kept for explicitness and defense-in-depth.
-            # NOTE: llama-server must be started with -np 1 for VRAM efficiency;
-            # id_slot alone does not prevent multi-slot allocation.
-            payload["id_slot"] = 0
-            logger.info("KV cache: cache_prompt=true, id_slot=0 (verify -np 1 on server)")
+            # Target the request's slot so save/restore and prefix-cache reuse hit
+            # the right session. With the default single slot (LOREGUARD_PARALLEL_SLOTS
+            # unset) this is always slot 0; with multiple slots, callers set req.id_slot
+            # per session so concurrent sessions keep their own cached cognitive context.
+            payload["id_slot"] = req.id_slot
+            logger.info(f"KV cache: cache_prompt=true, id_slot={req.id_slot}")
 
         # Disable thinking mode (for Qwen3/3.5).
         # Must use chat_template_kwargs — top-level enable_thinking is ignored by llama.cpp b8467+.
