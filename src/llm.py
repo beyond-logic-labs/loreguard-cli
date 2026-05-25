@@ -6,8 +6,6 @@ Supports llama-server's OpenAI-compatible /v1/chat/completions API with:
 - Thinking mode control (enable_thinking for Qwen3)
 - JSON schema/response_format for structured output
 - Thinking tag extraction (<think>...</think>)
-
-Based on netshell's local_llm.go implementation.
 """
 
 import json
@@ -79,7 +77,7 @@ class LLMRequest:
 
     # Target llama-server slot for this request. Default 0 keeps the ADR-0014
     # single-slot behavior. When the server runs with LOREGUARD_PARALLEL_SLOTS > 1,
-    # callers assign a slot per session (e.g. netshell maps session -> slot) so
+    # callers assign a slot per session (the client maps session -> slot) so
     # concurrent sessions each keep their own cached cognitive context.
     id_slot: int = 0
 

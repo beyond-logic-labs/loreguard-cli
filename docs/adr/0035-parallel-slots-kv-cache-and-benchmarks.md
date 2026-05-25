@@ -6,11 +6,11 @@ Accepted
 
 ## Context
 
-`loreguard-cli` runs `llama-server` on the end-user's GPU (and on netshell P2P
-worker nodes). Until now the server was launched with a **single forced slot**
+`loreguard-cli` runs `llama-server` on the end-user's GPU (and on capable nodes
+serving multiple sessions). Until now the server was launched with a **single forced slot**
 (`-np 1`, ADR-0014) and **f16 KV cache**. That is the right default for a typical
-player PC serving one session, but it leaves capable GPUs (and netshell nodes)
-unable to serve multiple concurrent sessions.
+player PC serving one session, but it leaves capable GPUs unable to serve
+multiple concurrent sessions.
 
 We needed to answer, with real measurements on consumer hardware:
 
@@ -123,13 +123,13 @@ smaller KV if they tolerate it.)
 
 - Default behavior unchanged for existing single-session installs (`-np 1`), but
   KV is now `q8_0`+flash-attention by default (near-lossless, smaller, faster).
-- Capable GPUs / netshell nodes set `LOREGUARD_PARALLEL_SLOTS` to serve multiple
+- Capable GPUs set `LOREGUARD_PARALLEL_SLOTS` to serve multiple
   sessions; `id_slot` routes each session to its slot, preserving per-session
   cognitive-context caching.
 - **Follow-up (orchestrator):** a session→slot LRU pool that assigns live sessions
   to slots and uses the existing `/slots` save/restore to park idle sessions on
   disk (avoids re-prefilling a returning user's 4–9k context). This CLI now
   provides the server capacity + `id_slot`; the pool logic lives in the
-  caller / netshell dispatcher.
+  calling client / dispatcher.
 - Slot count should be chosen per GPU VRAM (and KV type); auto-detection from
   `hardware_info` is a possible future enhancement.

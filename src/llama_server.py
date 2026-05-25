@@ -388,7 +388,7 @@ class LlamaServerProcess:
         # Default 1 preserves the ADR-0014 single-slot / slot-0 pinning behavior
         # (minimal VRAM). This is a server/dev knob: raise it via the
         # LOREGUARD_PARALLEL_SLOTS env var (or the explicit arg) on nodes with spare
-        # VRAM that serve multiple sessions concurrently (e.g. netshell P2P workers).
+        # VRAM that serve multiple sessions concurrently.
         # Each slot is given the full `context_size`, so total KV scales linearly:
         # total_context = context_size * parallel_slots. With SWA models (e.g. Gemma)
         # per-slot KV is small, so many slots fit even on 16 GB GPUs.
@@ -436,7 +436,7 @@ class LlamaServerProcess:
             "--slot-save-path", str(get_slot_cache_dir()),
             # Concurrent slots. Default 1 keeps the ADR-0014 single-slot / slot-0
             # pinning behavior (minimal VRAM). Raise via LOREGUARD_PARALLEL_SLOTS to
-            # serve multiple sessions at once (e.g. netshell workers); callers then
+            # serve multiple sessions at once; callers then
             # target a slot per session through the request's id_slot field.
             "-np", str(self.parallel_slots),
             # Enable Jinja template processing (required for both custom and embedded templates)
