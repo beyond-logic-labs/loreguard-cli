@@ -377,6 +377,7 @@ class LlamaServerProcess:
         context_size: int = 16384,
         model_family: str = "llama3",
         parallel_slots: Optional[int] = None,
+        kv_cache_type: Optional[str] = None,
     ):
         self.model_path = model_path
         self.port = port
@@ -397,6 +398,14 @@ class LlamaServerProcess:
             except ValueError:
                 parallel_slots = 1
         self.parallel_slots = max(1, parallel_slots)
+        # KV cache data type (-ctk/-ctv). Default "f16" = llama-server default (no extra
+        # flags, byte-identical to before). Set a quantized type (q8_0, q5_1, q4_0, ...)
+        # via LOREGUARD_KV_CACHE_TYPE to roughly halve/quarter KV memory — essential when
+        # serving many parallel_slots. Quantized KV requires flash attention, so -fa on is
+        # enabled automatically in that case.
+        if kv_cache_type is None:
+            kv_cache_type = os.environ.get("LOREGUARD_KV_CACHE_TYPE", "f16")
+        self.kv_cache_type = kv_cache_type or "f16"
         self.process: Optional[subprocess.Popen] = None
         self._output_lines: list[str] = []
 
@@ -433,6 +442,11 @@ class LlamaServerProcess:
             # Enable Jinja template processing (required for both custom and embedded templates)
             "--jinja",
         ]
+
+        # Quantized KV cache (q8_0/q5_1/...) to fit more slots in VRAM. llama.cpp requires
+        # flash attention for a quantized KV cache, so enable it alongside the -ctk/-ctv type.
+        if self.kv_cache_type and self.kv_cache_type != "f16":
+            cmd.extend(["-fa", "on", "-ctk", self.kv_cache_type, "-ctv", self.kv_cache_type])
 
         # Apply model-family-specific chat template override.
         # Llama 3.1 requires a custom template to avoid the tool-calling bug;
