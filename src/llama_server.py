@@ -30,7 +30,7 @@ def _get_templates_dir() -> Path:
     return Path(__file__).parent.parent / "templates"
 
 
-LLAMA_VERSION = "b8467"  # Must match loreguard-engine bundle version
+LLAMA_VERSION = "b9761"  # Must match loreguard-engine bundle version (b9761: adds gemma4 arch, retains Qwen 3.5 / Gemma-3)
 
 # Download URLs for each platform
 BINARIES = {
