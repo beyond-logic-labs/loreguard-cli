@@ -423,24 +423,40 @@ class NLIService:
             except Exception as e:
                 logger.warning(f"Could not patch config.json: {e}")
 
-        # Patch 3: configuration_hhem_v2.py — use local flan-t5-base instead of HuggingFace
-        # The HHEM model downloads google/flan-t5-base config+tokenizer at init.
-        # If we've bundled those files locally, rewrite the foundation path.
+        # Patch 3: configuration_hhem_v2.py, point the foundation at the bundled
+        # flan-t5-base. Resolve it RELATIVE to the config file at runtime (via
+        # __file__) so the path is portable and never a baked absolute machine path.
         config_py = os.path.join(patch_dir, "configuration_hhem_v2.py")
         local_foundation = os.path.join(patch_dir, "flan-t5-base")
         if os.path.exists(config_py) and os.path.isdir(local_foundation):
             try:
+                import re
+
                 content = open(config_py, "r").read()
-                if '"google/flan-t5-base"' in content:
-                    # Use absolute path to the bundled flan-t5-base files
-                    abs_path = os.path.abspath(local_foundation)
-                    patched = content.replace(
-                        '"google/flan-t5-base"',
-                        f'"{abs_path}"',
+                resolver = (
+                    'os.path.join(os.path.dirname(os.path.abspath(__file__)), '
+                    '"flan-t5-base")'
+                )
+                patched = content
+                if "import os" not in patched:
+                    patched = patched.replace(
+                        "from transformers import PretrainedConfig",
+                        "from transformers import PretrainedConfig\nimport os",
+                        1,
                     )
+                # Replace the class-level foundation assignment, whatever it is now
+                # (the HuggingFace default OR a previously-baked absolute path), with
+                # the self-resolving expression. count=1 leaves any __init__ default.
+                patched = re.sub(
+                    r'foundation\s*=\s*"[^"]*"',
+                    "foundation = " + resolver,
+                    patched,
+                    count=1,
+                )
+                if patched != content:
                     with open(config_py, "w") as f:
                         f.write(patched)
-                    logger.info(f"Patched foundation to local: {abs_path}")
+                    logger.info("Patched foundation to self-resolving relative path")
             except Exception as e:
                 logger.warning(f"Could not patch configuration_hhem_v2.py: {e}")
 
