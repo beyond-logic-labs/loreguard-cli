@@ -11,6 +11,7 @@ Location (platform-specific):
 
 import json
 import os
+import tempfile
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from functools import lru_cache
@@ -69,12 +70,35 @@ class RuntimeInfo:
     version: str
     llm_port: Optional[int] = None
     backend_connected: bool = False
+    api_token: str = ""
 
     def save(self) -> None:
-        """Write runtime info to disk."""
+        """Atomically write runtime info with user-only permissions."""
         path = get_runtime_path()
-        with open(path, "w") as f:
-            json.dump(asdict(self), f, indent=2)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(path.parent, 0o700)
+        except OSError:
+            pass
+
+        # mkstemp uses O_EXCL; chmod before writing so a partially written
+        # credential file is never broadly readable.
+        fd, temp_name = tempfile.mkstemp(prefix=".runtime-", suffix=".json", dir=path.parent)
+        temp_path = Path(temp_name)
+        try:
+            os.chmod(temp_path, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(asdict(self), f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, path)
+            os.chmod(path, 0o600)
+        except Exception:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+            raise
 
     def update_backend_status(self, connected: bool) -> None:
         """Update backend connection status and save."""
@@ -101,6 +125,7 @@ class RuntimeInfo:
                 version=data["version"],
                 llm_port=data.get("llm_port"),
                 backend_connected=data.get("backend_connected", False),
+                api_token=data.get("api_token", ""),
             )
         except (json.JSONDecodeError, KeyError, TypeError):
             return None
@@ -133,6 +158,7 @@ def write_runtime_info(
     port: int,
     version: Optional[str] = None,
     llm_port: Optional[int] = None,
+    api_token: str = "",
 ) -> RuntimeInfo:
     """Create and save runtime info.
 
@@ -151,6 +177,7 @@ def write_runtime_info(
         version=version or get_version(),
         llm_port=llm_port,
         backend_connected=False,
+        api_token=api_token,
     )
     info.save()
     return info
@@ -183,6 +210,7 @@ def get_status(verify_health: bool = True) -> dict:
             import urllib.request
             url = f"http://127.0.0.1:{info.port}/health"
             req = urllib.request.Request(url, method="GET")
+            req.add_header("Authorization", f"Bearer {info.api_token}")
             with urllib.request.urlopen(req, timeout=2) as response:
                 if response.status == 200:
                     # Update backend_connected from health response

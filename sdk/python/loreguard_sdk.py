@@ -98,6 +98,15 @@ def get_base_url() -> str:
     return f"http://127.0.0.1:{port}"
 
 
+def get_auth_headers() -> dict[str, str]:
+    """Return the per-launch capability required by the local SDK server."""
+    info = get_runtime_info()
+    token = info.get("api_token", "") if info else ""
+    if not token:
+        raise RuntimeError("loreguard-client runtime credential is missing; restart loreguard-client")
+    return {"Authorization": f"Bearer {token}"}
+
+
 def is_running() -> bool:
     """Check if loreguard-client is running.
 
@@ -186,7 +195,7 @@ async def chat(
         raise ImportError("httpx is required for chat. Install with: pip install httpx")
 
     url = f"{get_base_url()}/api/chat"
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", **get_auth_headers()}
 
     if stream:
         headers["Accept"] = "text/event-stream"
@@ -249,7 +258,7 @@ async def get_capabilities() -> dict[str, Any]:
 
     url = f"{get_base_url()}/api/capabilities"
     async with httpx.AsyncClient() as client:
-        response = await client.get(url, timeout=5.0)
+        response = await client.get(url, headers=get_auth_headers(), timeout=5.0)
         response.raise_for_status()
         return response.json()
 
@@ -269,7 +278,7 @@ async def health_check() -> dict[str, Any]:
 
     url = f"{get_base_url()}/health"
     async with httpx.AsyncClient() as client:
-        response = await client.get(url, timeout=5.0)
+        response = await client.get(url, headers=get_auth_headers(), timeout=5.0)
         response.raise_for_status()
         return response.json()
 
@@ -316,6 +325,6 @@ def chat_sync(
         body["max_speech_tokens"] = max_speech_tokens
 
     with httpx.Client() as client:
-        response = client.post(url, json=body, timeout=120.0)
+        response = client.post(url, headers=get_auth_headers(), json=body, timeout=120.0)
         response.raise_for_status()
         return response.json()

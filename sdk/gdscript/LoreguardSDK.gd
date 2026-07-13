@@ -94,6 +94,14 @@ static func get_base_url() -> String:
 	return "http://127.0.0.1:%d" % port
 
 
+static func get_auth_header() -> String:
+	"""Get the per-launch capability header for the local SDK server."""
+	var info = get_runtime_info()
+	if info == null or not info.has("api_token") or str(info["api_token"]).is_empty():
+		return ""
+	return "Authorization: Bearer %s" % str(info["api_token"])
+
+
 static func is_running() -> bool:
 	"""Check if loreguard-client is running."""
 	return get_local_port() != -1
@@ -130,8 +138,12 @@ func chat(
 
 	var headers = [
 		"Content-Type: application/json",
-		"Accept: application/json"  # Non-streaming for simplicity
+		"Accept: application/json",  # Non-streaming for simplicity
+		get_auth_header()
 	]
+	if headers[-1].is_empty():
+		chat_error.emit("loreguard-client runtime credential is missing; restart loreguard-client")
+		return
 
 	var error = _http_request.request(
 		url + "/api/chat",
@@ -221,8 +233,12 @@ func _streaming_request(
 
 	var headers = [
 		"Content-Type: application/json",
-		"Accept: text/event-stream"
+		"Accept: text/event-stream",
+		get_auth_header()
 	]
+	if headers[-1].is_empty():
+		call_deferred("emit_signal", "chat_error", "loreguard-client runtime credential is missing; restart loreguard-client")
+		return
 
 	err = http.request(HTTPClient.METHOD_POST, "/api/chat", headers, body)
 	if err != OK:

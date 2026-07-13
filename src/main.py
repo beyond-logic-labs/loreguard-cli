@@ -20,6 +20,7 @@ Features (from netshell's local_llm.go):
 import asyncio
 import json
 import os
+import secrets
 import uuid
 from typing import Any
 
@@ -40,6 +41,7 @@ from .dialogue_act_classifier import (
     download_dialogue_act_model,
     get_dialogue_act_model_info,
 )
+from .body_limit import RequestBodyLimitMiddleware
 
 load_dotenv()
 
@@ -63,6 +65,37 @@ llm_proxy: LLMProxy | None = None
 nli_service: NLIService | None = None
 intent_classifier: IntentClassifier | None = None
 dialogue_act_classifier: DialogueActClassifier | None = None
+local_api_token = secrets.token_urlsafe(32)
+MAX_LOCAL_REQUEST_BODY = 1024 * 1024
+
+# Install this before the decorator middleware below so capability auth remains
+# the outer gate, while authorized bodies are capped before Pydantic buffers
+# and validates endpoint parameters.
+app.add_middleware(RequestBodyLimitMiddleware, max_body_size=MAX_LOCAL_REQUEST_BODY)
+
+
+@app.middleware("http")
+async def require_local_capability(request: Request, call_next):
+    # /health is an unauthenticated liveness signal so external probes work
+    # without the per-launch capability. Everything else is gated.
+    if request.url.path == "/health":
+        return await call_next(request)
+
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_LOCAL_REQUEST_BODY:
+                return JSONResponse(status_code=413, content={"error": "Request body too large"})
+        except ValueError:
+            return JSONResponse(status_code=400, content={"error": "Invalid Content-Length"})
+
+    expected = f"Bearer {local_api_token}"
+    # Compare as bytes so a non-ASCII header byte yields a clean 401 rather
+    # than a TypeError (compare_digest rejects non-ASCII str).
+    auth = request.headers.get("authorization", "")
+    if not secrets.compare_digest(auth.encode("utf-8", "replace"), expected.encode("utf-8")):
+        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+    return await call_next(request)
 
 
 @app.on_event("startup")
@@ -435,6 +468,8 @@ def run():
     console.print("=" * 40)
 
     host = os.getenv("HOST", "127.0.0.1")
+    if host not in {"127.0.0.1", "localhost"}:
+        raise ValueError("Loreguard client must bind to a loopback address")
 
     # Always use dynamic port unless explicitly overridden via PORT env var
     requested_port = int(os.getenv("PORT", "0"))
@@ -457,7 +492,7 @@ def run():
     _server_port = port
 
     # Write runtime info for SDK discovery
-    write_runtime_info(port=port)
+    write_runtime_info(port=port, api_token=local_api_token)
 
     console.print(f"[green]Runtime info:[/green] {get_runtime_path()}")
     console.print(f"Starting server at [cyan]http://{host}:{port}[/cyan]")

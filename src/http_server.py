@@ -20,6 +20,7 @@ Uses uvicorn with socket-first binding for race-condition-free port allocation.
 import asyncio
 import json
 import os
+import secrets
 import threading
 import time
 import uuid
@@ -28,6 +29,10 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .runtime import write_runtime_info, RuntimeInfo, get_runtime_path, get_version
+from .body_limit import RequestBodyLimitMiddleware
+
+
+MAX_LOCAL_REQUEST_BODY = 1024 * 1024
 
 
 class EmbeddedHTTPServer:
@@ -55,6 +60,8 @@ class EmbeddedHTTPServer:
         on_status_change: Optional[Callable[[str], None]] = None,
         main_loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
+        if host not in {"127.0.0.1", "localhost"}:
+            raise ValueError("SDK server must bind to a loopback address")
         self.tunnel = tunnel
         self.host = host
         self.requested_port = port
@@ -69,6 +76,7 @@ class EmbeddedHTTPServer:
         self._ready_event = threading.Event()
         self.llama_process: Optional[Any] = None  # LlamaServerProcess — set by RunningScreen
         self.models_dir: Optional[Path] = None     # Path to models/ directory
+        self.api_token = secrets.token_urlsafe(32)
 
     def start(self) -> int:
         """Start the HTTP server in a background thread.
@@ -83,6 +91,17 @@ class EmbeddedHTTPServer:
         """
         # Early debug logging
         debug_path = get_runtime_path().parent / "sdk_debug.log"
+        debug_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(debug_path.parent, 0o700)
+        except OSError:
+            pass
+        fd = os.open(debug_path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+        os.close(fd)
+        try:
+            os.chmod(debug_path, 0o600)
+        except OSError:
+            pass
         with open(debug_path, "a") as f:
             f.write(f"[SDK Server] start() called, _running={self._running}\n")
 
@@ -307,7 +326,7 @@ class EmbeddedHTTPServer:
             f.write(f"[SDK Server] _run_server() started in thread\n")
 
         try:
-            from fastapi import FastAPI, Request
+            from fastapi import FastAPI, HTTPException, Request
             from fastapi.responses import StreamingResponse, JSONResponse
         except ImportError as e:
             with open(debug_path, "a") as f:
@@ -319,9 +338,50 @@ class EmbeddedHTTPServer:
         with open(debug_path, "a") as f:
             f.write(f"[SDK Server] Creating FastAPI app...\n")
         app = FastAPI(title="Loreguard SDK Server", version=get_version())
+        app.add_middleware(RequestBodyLimitMiddleware, max_body_size=MAX_LOCAL_REQUEST_BODY)
 
         # Store reference to self for route handlers
         server = self
+
+        @app.middleware("http")
+        async def require_local_capability(request: Request, call_next):
+            # /health is an unauthenticated liveness signal so external probes
+            # work without the per-launch capability. Everything else is gated.
+            if request.url.path == "/health":
+                return await call_next(request)
+
+            content_length = request.headers.get("content-length")
+            if content_length:
+                try:
+                    if int(content_length) > MAX_LOCAL_REQUEST_BODY:
+                        return JSONResponse(status_code=413, content={"error": "Request body too large"})
+                except ValueError:
+                    return JSONResponse(status_code=400, content={"error": "Invalid Content-Length"})
+
+            auth = request.headers.get("authorization", "")
+            expected = f"Bearer {server.api_token}"
+            # Compare as bytes so a non-ASCII header byte yields a clean 401
+            # rather than a TypeError (compare_digest rejects non-ASCII str).
+            if not secrets.compare_digest(
+                auth.encode("utf-8", "replace"), expected.encode("utf-8")
+            ):
+                return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+            return await call_next(request)
+
+        async def read_json_body(request: Request) -> dict:
+            content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if content_type != "application/json":
+                raise HTTPException(status_code=415, detail="Content-Type must be application/json")
+            raw = await request.body()
+            if len(raw) > MAX_LOCAL_REQUEST_BODY:
+                raise HTTPException(status_code=413, detail="Request body too large")
+            try:
+                body = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                raise HTTPException(status_code=400, detail="Invalid JSON")
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="JSON body must be an object")
+            return body
 
         @app.get("/health")
         async def health():
@@ -383,7 +443,7 @@ class EmbeddedHTTPServer:
                 import httpx
                 # Forward Authorization header if present
                 headers = {}
-                auth_header = request.headers.get("authorization", "")
+                auth_header = request.headers.get("x-loreguard-backend-authorization", "")
                 if auth_header:
                     headers["Authorization"] = auth_header
 
@@ -407,7 +467,7 @@ class EmbeddedHTTPServer:
                     content={"error": "Not connected to backend"},
                 )
 
-            body = await request.json()
+            body = await read_json_body(request)
             history = body.get("history") or body.get("context") or []
             player_id = body.get("player_id", body.get("playerId", ""))
             player_handle = body.get("player_handle", body.get("playerHandle", ""))
@@ -421,8 +481,9 @@ class EmbeddedHTTPServer:
             accept = request.headers.get("accept", "")
             streaming = "text/event-stream" in accept
 
-            # Extract API token from Authorization header for backend auth
-            auth_header = request.headers.get("authorization", "")
+            # The local Authorization header is a per-launch capability and
+            # must never be forwarded to the cloud backend.
+            auth_header = request.headers.get("x-loreguard-backend-authorization", "")
             api_token = auth_header.replace("Bearer ", "") if auth_header.startswith("Bearer ") else ""
 
             request_id = str(uuid.uuid4())
@@ -527,7 +588,7 @@ class EmbeddedHTTPServer:
                     content={"error": "Models directory not configured"},
                 )
 
-            body = await request.json()
+            body = await read_json_body(request)
             model_name = body.get("model", "")
             if not model_name:
                 return JSONResponse(
@@ -604,7 +665,7 @@ class EmbeddedHTTPServer:
         # Write runtime info
         with open(debug_path, "a") as f:
             f.write(f"[SDK Server] Writing runtime info for port {self.actual_port}...\n")
-        write_runtime_info(port=self.actual_port)
+        write_runtime_info(port=self.actual_port, api_token=self.api_token)
 
         if self.on_status_change:
             self.on_status_change(f"SDK server on port {self.actual_port}")
@@ -621,12 +682,6 @@ class EmbeddedHTTPServer:
             with open(debug_path, "a") as f:
                 f.write(f"[SDK Server] Importing uvicorn...\n")
             import uvicorn
-
-            # Close the pre-bound socket - uvicorn will rebind to the same port
-            # This is safe because we're in the same thread and no other process
-            # should grab the port in this tiny window
-            self._bound_socket.close()
-            self._bound_socket = None
 
             # Create uvicorn config (disable all logging to avoid TUI glitches)
             config = uvicorn.Config(
@@ -649,7 +704,7 @@ class EmbeddedHTTPServer:
             uvicorn_server.install_signal_handlers = lambda: None
 
             # Run the server
-            self._loop.run_until_complete(uvicorn_server.serve())
+            self._loop.run_until_complete(uvicorn_server.serve(sockets=[self._bound_socket]))
 
             with open(debug_path, "a") as f:
                 f.write("[SDK Server] Uvicorn stopped normally\n")

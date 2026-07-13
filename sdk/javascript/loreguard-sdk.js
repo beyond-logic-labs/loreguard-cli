@@ -83,6 +83,14 @@ function getBaseUrl() {
   return `http://127.0.0.1:${getLocalPort()}`;
 }
 
+function getAuthHeaders() {
+  const info = getRuntimeInfo();
+  if (!info || !info.api_token) {
+    throw new Error('loreguard-client runtime credential is missing; restart loreguard-client');
+  }
+  return { Authorization: `Bearer ${info.api_token}` };
+}
+
 /**
  * Check if loreguard-client is running.
  * @returns {boolean}
@@ -113,12 +121,20 @@ async function* chat(characterId, message, options = {}) {
     headers: {
       'Content-Type': 'application/json',
       'Accept': 'text/event-stream',
+      ...getAuthHeaders(),
     },
     body: JSON.stringify({
       character_id: characterId,
       message: message,
       player_handle: options.playerHandle || '',
+      player_id: options.playerId || '',
       current_context: options.currentContext || '',
+      scenario_id: options.scenarioId || '',
+      history: options.history || [],
+      chunk_mode: options.chunkMode || '',
+      manage_history: options.manageHistory || false,
+      max_speech_tokens: options.maxSpeechTokens || 0,
+      verbose: options.verbose || false,
     }),
   });
 
@@ -174,12 +190,20 @@ async function chatSimple(characterId, message, options = {}) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      ...getAuthHeaders(),
     },
     body: JSON.stringify({
       character_id: characterId,
       message: message,
       player_handle: options.playerHandle || '',
+      player_id: options.playerId || '',
       current_context: options.currentContext || '',
+      scenario_id: options.scenarioId || '',
+      history: options.history || [],
+      chunk_mode: options.chunkMode || '',
+      manage_history: options.manageHistory || false,
+      max_speech_tokens: options.maxSpeechTokens || 0,
+      verbose: options.verbose || false,
     }),
   });
 
@@ -196,7 +220,7 @@ async function chatSimple(characterId, message, options = {}) {
  */
 async function healthCheck() {
   const url = `${getBaseUrl()}/health`;
-  const response = await fetch(url);
+  const response = await fetch(url, { headers: getAuthHeaders() });
 
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -211,6 +235,7 @@ module.exports = {
   getRuntimeInfo,
   getLocalPort,
   getBaseUrl,
+  getAuthHeaders,
   isRunning,
   chat,
   chatSimple,
