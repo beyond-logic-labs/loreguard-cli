@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .runtime import write_runtime_info, RuntimeInfo, get_runtime_path, get_version
+from .body_limit import RequestBodyLimitMiddleware
 
 
 MAX_LOCAL_REQUEST_BODY = 1024 * 1024
@@ -337,6 +338,7 @@ class EmbeddedHTTPServer:
         with open(debug_path, "a") as f:
             f.write(f"[SDK Server] Creating FastAPI app...\n")
         app = FastAPI(title="Loreguard SDK Server", version=get_version())
+        app.add_middleware(RequestBodyLimitMiddleware, max_body_size=MAX_LOCAL_REQUEST_BODY)
 
         # Store reference to self for route handlers
         server = self

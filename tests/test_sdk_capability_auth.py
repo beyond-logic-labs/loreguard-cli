@@ -128,6 +128,19 @@ async def _asgi_status(app, path, headers):
     return start["status"]
 
 
+async def _chunked_oversize_status(app, path, headers):
+    """Send an oversized streaming body without a Content-Length header."""
+
+    async def chunks():
+        yield b"x" * (600 * 1024)
+        yield b"y" * (600 * 1024)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://local") as client:
+        response = await client.post(path, headers=headers, content=chunks())
+        return response.status_code
+
+
 class SDKServerCapabilityAuthTest(unittest.TestCase):
     def setUp(self):
         self.tunnel = FakeTunnel()
@@ -192,6 +205,20 @@ class SDKServerCapabilityAuthTest(unittest.TestCase):
             "GET", "/api/capabilities", headers=self._bearer(self.capability)
         )
         self.assertEqual(resp.status_code, 200)
+
+    def test_chunked_body_is_capped_before_handler_buffering(self):
+        status = asyncio.run(
+            _chunked_oversize_status(
+                self.app,
+                "/api/chat",
+                {
+                    "Authorization": f"Bearer {self.capability}",
+                    "Content-Type": "application/json",
+                },
+            )
+        )
+        self.assertEqual(status, 413)
+        self.assertIsNone(self.tunnel.received)
 
     def test_gate_runs_before_routing(self):
         # A wrong token on a nonexistent path returns 401 (auth), never 404.
@@ -315,6 +342,19 @@ class BridgeServerCapabilityAuthTest(unittest.TestCase):
         # 401 would mean the gate rejected a valid capability. /models may return
         # 200 or a non-auth error depending on LLM state; it must not be 401.
         self.assertNotEqual(resp.status_code, 401)
+
+    def test_chunked_body_is_capped_before_pydantic_buffering(self):
+        status = asyncio.run(
+            _chunked_oversize_status(
+                self.app,
+                "/api/chat",
+                {
+                    "Authorization": f"Bearer {self.capability}",
+                    "Content-Type": "application/json",
+                },
+            )
+        )
+        self.assertEqual(status, 413)
 
     def test_non_ascii_authorization_byte_yields_401_not_500(self):  # TC-49
         status = asyncio.run(

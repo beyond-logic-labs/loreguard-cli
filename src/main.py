@@ -41,6 +41,7 @@ from .dialogue_act_classifier import (
     download_dialogue_act_model,
     get_dialogue_act_model_info,
 )
+from .body_limit import RequestBodyLimitMiddleware
 
 load_dotenv()
 
@@ -66,6 +67,11 @@ intent_classifier: IntentClassifier | None = None
 dialogue_act_classifier: DialogueActClassifier | None = None
 local_api_token = secrets.token_urlsafe(32)
 MAX_LOCAL_REQUEST_BODY = 1024 * 1024
+
+# Install this before the decorator middleware below so capability auth remains
+# the outer gate, while authorized bodies are capped before Pydantic buffers
+# and validates endpoint parameters.
+app.add_middleware(RequestBodyLimitMiddleware, max_body_size=MAX_LOCAL_REQUEST_BODY)
 
 
 @app.middleware("http")
