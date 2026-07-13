@@ -430,8 +430,8 @@ Available model IDs:
 
     parser.add_argument(
         "--token",
-        default=os.getenv("LOREGUARD_TOKEN", ""),
-        help="API token (or set LOREGUARD_TOKEN env var)",
+        default=os.getenv("LOREGUARD_TOKEN", "") or os.getenv("LOREGUARD_LOCAL_TOKEN", ""),
+        help="Worker token (or set LOREGUARD_TOKEN/LOREGUARD_LOCAL_TOKEN)",
     )
     parser.add_argument(
         "--worker-id",
@@ -484,7 +484,7 @@ Available model IDs:
     parser.add_argument(
         "--dev",
         action="store_true",
-        help="Dev mode - skip backend connection, just run llama-server",
+        help="Enable development logging/settings (authentication is still required)",
     )
     parser.add_argument(
         "--chat",
@@ -520,24 +520,14 @@ Available model IDs:
             pass
         sys.exit(0)
 
-    # Dev mode - skip token validation
+    # Development mode never weakens worker authentication. Older local engines
+    # accepted placeholder tokens, but the enterprise runtime now requires the
+    # same per-launch capability as its HTTP API.
     if args.dev:
-        args.token = "dev_mock_token"
-        log.info("Running in DEV MODE - no backend connection")
-    else:
-        # Local bundle backends (ws:// to localhost/127.0.0.1) run with RequireAuth=false,
-        # so any non-empty token is accepted. Only require a real token for cloud backends.
-        backend = args.backend
-        is_local_backend = (
-            backend.startswith("ws://") and
-            any(backend.startswith(f"ws://{h}") for h in ("localhost", "127.0.0.1", "[::1]"))
-        )
-        if not args.token and is_local_backend:
-            # Local bundle backends run with RequireAuth=false — any non-empty token works.
-            args.token = "local"
-        elif not args.token:
-            log.error("Token required. Use --token or set LOREGUARD_TOKEN (or use --dev)")
-            sys.exit(1)
+        log.info("Running in DEV MODE")
+    if not args.token:
+        log.error("Token required. Use --token or set LOREGUARD_TOKEN/LOREGUARD_LOCAL_TOKEN")
+        sys.exit(1)
 
     # Validate model
     if not args.model and not args.model_id:

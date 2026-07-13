@@ -41,6 +41,18 @@ def get_local_proxy_url() -> str | None:
     return None
 
 
+def get_local_capability() -> str | None:
+    """Get the per-launch local capability token from runtime.json.
+
+    This authenticates requests to the embedded SDK server and is distinct
+    from the cloud/worker API token. Returns None if not available.
+    """
+    info = RuntimeInfo.load()
+    if info and info.api_token:
+        return info.api_token
+    return None
+
+
 class DebugPassWidget(Static):
     """A single collapsible debug pass entry."""
 
@@ -842,6 +854,21 @@ class NPCChat(Vertical):
         if not local_proxy_url:
             raise httpx.ConnectError("Local proxy URL not found in runtime.json")
 
+        local_capability = get_local_capability()
+        if not local_capability:
+            raise httpx.ConnectError("Local capability not found in runtime.json")
+
+        # The embedded SDK server authenticates with the per-launch local
+        # capability, not the cloud/worker token. Forward the cloud token
+        # separately so the server can reach the backend when it needs to.
+        local_headers = {
+            "Authorization": f"Bearer {local_capability}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+        if self._api_token:
+            local_headers["X-Loreguard-Backend-Authorization"] = f"Bearer {self._api_token}"
+
         # Widget created lazily on first token
         streaming_text: Text | None = None
         streaming_widget: Static | None = None
@@ -855,11 +882,7 @@ class NPCChat(Vertical):
             async with client.stream(
                 "POST",
                 f"{local_proxy_url}/api/chat",
-                headers={
-                    "Authorization": f"Bearer {self._api_token}",
-                    "Content-Type": "application/json",
-                    "Accept": "text/event-stream",
-                },
+                headers=local_headers,
                 json=payload,
             ) as response:
                 if response.status_code != 200:

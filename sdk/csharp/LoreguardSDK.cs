@@ -179,6 +179,13 @@ namespace Loreguard
             webRequest.downloadHandler = new DownloadHandlerBuffer();
             webRequest.SetRequestHeader("Content-Type", "application/json");
             webRequest.SetRequestHeader("Accept", "text/event-stream");
+            var runtimeInfo = GetRuntimeInfo();
+            if (runtimeInfo == null || string.IsNullOrEmpty(runtimeInfo.api_token))
+            {
+                onError?.Invoke("loreguard-client runtime credential is missing; restart loreguard-client");
+                yield break;
+            }
+            webRequest.SetRequestHeader("Authorization", $"Bearer {runtimeInfo.api_token}");
 
             webRequest.SendWebRequest();
 
@@ -285,6 +292,13 @@ namespace Loreguard
             var body = JsonUtility.ToJson(request);
 
             using var webRequest = UnityWebRequest.Post(url, body, "application/json");
+            var runtimeInfo = GetRuntimeInfo();
+            if (runtimeInfo == null || string.IsNullOrEmpty(runtimeInfo.api_token))
+            {
+                onError?.Invoke("loreguard-client runtime credential is missing; restart loreguard-client");
+                yield break;
+            }
+            webRequest.SetRequestHeader("Authorization", $"Bearer {runtimeInfo.api_token}");
             yield return webRequest.SendWebRequest();
 
             if (webRequest.result == UnityWebRequest.Result.Success)
@@ -309,6 +323,7 @@ namespace Loreguard
             public string started_at;
             public string version;
             public bool backend_connected;
+            public string api_token;
         }
 
         [Serializable]

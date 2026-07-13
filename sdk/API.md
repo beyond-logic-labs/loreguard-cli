@@ -19,11 +19,12 @@ On startup, loreguard-client writes a `runtime.json` file:
   "url": "http://127.0.0.1:52341",
   "started_at": "2026-02-20T10:30:00Z",
   "version": "0.7.0",
-  "backend_connected": true
+  "backend_connected": true,
+  "api_token": "per-launch-local-capability"
 }
 ```
 
-Read this file to discover the port, then make HTTP calls to `http://127.0.0.1:{port}`.
+Read this user-only file to discover the port and `api_token`, then make HTTP calls to `http://127.0.0.1:{port}`. Every endpoint requires `Authorization: Bearer <api_token>`. The token changes each time loreguard-client starts and must not be logged or forwarded to a remote backend.
 
 ---
 
@@ -78,7 +79,8 @@ Send a player message and get an NPC response. Supports both blocking JSON and S
 |--------|-------|--------|
 | `Content-Type` | `application/json` | Required |
 | `Accept` | `text/event-stream` | Enables SSE streaming (optional) |
-| `Authorization` | `Bearer <token>` | API token for character access (optional) |
+| `Authorization` | `Bearer <api_token from runtime.json>` | Required local capability |
+| `X-Loreguard-Backend-Authorization` | `Bearer <backend token>` | Optional character-access credential forwarded to the configured backend |
 
 **Request Body:**
 

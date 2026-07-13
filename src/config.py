@@ -7,6 +7,7 @@ Also supports persistent file-based configuration for the TUI.
 import json
 import os
 import platform
+import tempfile
 from dataclasses import dataclass, asdict
 from functools import lru_cache
 from pathlib import Path
@@ -31,7 +32,11 @@ def get_data_dir() -> Path:
         base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
 
     data_dir = base / "loreguard"
-    data_dir.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(data_dir, 0o700)
+    except OSError:
+        pass
     return data_dir
 
 
@@ -53,10 +58,24 @@ class LoreguardConfig:
     dialogue_act_enabled: bool = False  # Dialogue act classifier for filler selection
 
     def save(self) -> None:
-        """Save configuration to disk."""
+        """Atomically save credentials with user-only permissions."""
         config_path = get_config_path()
-        with open(config_path, "w") as f:
-            json.dump(asdict(self), f, indent=2)
+        fd, temp_name = tempfile.mkstemp(prefix=".config-", suffix=".json", dir=config_path.parent)
+        temp_path = Path(temp_name)
+        try:
+            os.chmod(temp_path, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(asdict(self), f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, config_path)
+            os.chmod(config_path, 0o600)
+        except Exception:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+            raise
 
     @classmethod
     def load(cls) -> "LoreguardConfig":
