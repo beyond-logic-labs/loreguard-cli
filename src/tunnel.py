@@ -11,6 +11,7 @@ This is the core of the client bridge. It:
 import asyncio
 import json
 import logging
+import os
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -271,6 +272,14 @@ class BackendTunnel:
             capabilities.append("chunk")
             self._log("Chunk detection capability enabled (ADR-0023)", "info")
 
+        # Worker slot capacity (LOREGUARD_PARALLEL_SLOTS) so the backend's
+        # session -> slot allocator knows how many concurrent sessions this worker
+        # can keep warm. Mirrors the value LlamaServerProcess starts llama-server with.
+        try:
+            parallel_slots = max(1, int(os.environ.get("LOREGUARD_PARALLEL_SLOTS") or "1"))
+        except ValueError:
+            parallel_slots = 1
+
         # Build registration message
         register_msg = {
             "id": self._generate_message_id(),
@@ -286,6 +295,7 @@ class BackendTunnel:
                     "address": f"localhost:{self.llm_proxy.endpoint.split(':')[-1]}",
                     "status": "ready",
                     "queueDepth": 0,
+                    "parallelSlots": parallel_slots,
                 },
                 "authToken": self.worker_token,
             },
@@ -656,6 +666,7 @@ class BackendTunnel:
                 "temperature": payload.get("temperature", 0.7),
                 "timeout": payload.get("timeoutMs", 120000) / 1000,  # Convert to seconds
                 "cache_prompt": payload.get("cacheEnabled", False),  # Enable KV cache prefix sharing
+                "id_slot": payload.get("idSlot", 0),  # engine-assigned slot per NPC+player session (ADR-0014)
             }
 
             # Pass through JSON output settings (ADR-0012: grammar-constrained JSON)

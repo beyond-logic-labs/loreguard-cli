@@ -132,6 +132,29 @@ Works with any `.gguf` model. Tested with the following model families:
 
 Use any model with `--model /path/to/model.gguf`.
 
+## Concurrency (multi-slot)
+
+A capable GPU can serve several NPC conversations at once. Two env vars control this:
+
+- **`LOREGUARD_PARALLEL_SLOTS`** (default `1`) — number of concurrent conversation slots
+  (`llama-server -np`). Each slot holds one conversation's KV cache. Recommended on a **16 GB GPU: `8`**
+  (≈`10` is the ceiling at ~4k-token sessions, ~`8` at ~8k). Start at `4` and raise as you confirm VRAM
+  (`nvidia-smi`) and throughput headroom. Don't over-provision — MoE models (e.g. Gemma) lose throughput
+  when `-np` greatly exceeds real active concurrency.
+- **`LOREGUARD_KV_CACHE_TYPE`** (default `q8_0`) — KV cache quantization. Keep `q8_0`; lower bit widths
+  produce gibberish on Gemma.
+
+```bash
+export LOREGUARD_PARALLEL_SLOTS=8
+export LOREGUARD_KV_CACHE_TYPE=q8_0
+loreguard --token lg_worker_xxx --model-id gemma-3-27b
+```
+
+A slot serves one conversation per turn. **Size `LOREGUARD_PARALLEL_SLOTS` at or above your expected peak
+concurrency:** when all slots are busy, the engine waits briefly and then *fails* the extra turn (a clean
+error the game can retry) rather than corrupting a live conversation. Background memory passes borrow a
+free slot transiently and are skipped under saturation. Full benchmarks and sizing rationale: ADR-0035.
+
 ## Use Cases
 
 ### For Game Developers (Testing & Development)

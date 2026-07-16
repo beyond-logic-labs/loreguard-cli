@@ -9,7 +9,7 @@ The client:
 4. Executes on local llama.cpp with full sampling config
 5. Returns results to backend (content, thinking, usage)
 
-Features (from netshell's local_llm.go):
+Features:
 - Full sampling configuration (top_p, min_p, repeat_penalty, etc.)
 - Stop sequences to prevent hallucinated conversation turns
 - Thinking mode control (enable_thinking for Qwen3)
