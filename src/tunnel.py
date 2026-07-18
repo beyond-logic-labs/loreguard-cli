@@ -16,6 +16,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, TYPE_CHECKING
+from urllib.parse import urlsplit
 
 import websockets
 from rich.console import Console
@@ -30,6 +31,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 console = Console()
+
+# Engine-side default output cap for global stylize jobs when the job sets
+# none (loreguard-engine internal/cloud/verification/containment.go
+# DefaultMaxOutputChars). Mirrored so the client trims to the same limit the
+# server enforces.
+STYLIZE_DEFAULT_MAX_CHARS = 2048
 
 
 @dataclass
@@ -65,6 +72,16 @@ class BackendTunnel:
         log_callback: Callable[[str, str], None] | None = None,
         max_retries: int = -1,  # -1 = infinite retries, 0 = no retries (single try)
     ):
+        # Volunteer mode refuses plaintext transport to non-loopback hosts
+        # (loreguard-engine#87): on ws:// a network MITM could inject or
+        # rewrite dispatches regardless of message signing.
+        if os.environ.get("LOREGUARD_VOLUNTEER") == "1" and backend_url.startswith("ws://"):
+            host = urlsplit(backend_url).hostname or ""
+            if host not in ("localhost", "127.0.0.1", "::1"):
+                raise ValueError(
+                    f"volunteer mode requires wss:// for non-loopback backends (got {backend_url})"
+                )
+
         self.backend_url = backend_url
         self.llm_proxy = llm_proxy
         self.worker_id = worker_id
@@ -105,6 +122,9 @@ class BackendTunnel:
         # Maps request_id -> cleanup task that removes queue after timeout
         self._follow_up_cleanup_tasks: dict[str, asyncio.Task] = {}
         self._follow_up_cleanup_delay = 20.0  # Keep queue alive for 20s after done
+
+        # One-time warning when volunteer mode runs without a dispatch pin
+        self._warned_unsigned_dispatch = False
 
     def _log(self, message: str, level: str = "info"):
         """Log a message through callback or fallback to console."""
@@ -258,19 +278,27 @@ class BackendTunnel:
         model_id = self.model_id
 
         # Build capabilities list - add "nli" if NLI service is available
-        capabilities = ["chat", "completion"]
-        if self.nli_service is not None and self.nli_service.is_loaded:
-            capabilities.append("nli")
-            self._log("NLI capability enabled", "info")
-        if self.intent_classifier is not None and self.intent_classifier.is_loaded:
-            capabilities.append("intent")
-            self._log("Intent classification capability enabled (ADR-0010)", "info")
-        if self.dialogue_act_classifier is not None and self.dialogue_act_classifier.is_loaded:
-            capabilities.append("dialogue_act")
-            self._log("Dialogue act capability enabled", "info")
-        if self.chunk_detector is not None and self.chunk_detector.is_loaded:
-            capabilities.append("chunk")
-            self._log("Chunk detection capability enabled (ADR-0023)", "info")
+        if os.environ.get("LOREGUARD_VOLUNTEER") == "1":
+            # Tier-3 volunteer mode (engine ADR-0037): volunteer workers serve
+            # only the global stylize lane, so advertise nothing beyond text
+            # completion regardless of which local models are loaded.
+            capabilities = ["completion"]
+            # No brackets in the message: rich Console parses [completion] as markup.
+            self._log("Volunteer mode: capabilities pinned to completion only", "info")
+        else:
+            capabilities = ["chat", "completion"]
+            if self.nli_service is not None and self.nli_service.is_loaded:
+                capabilities.append("nli")
+                self._log("NLI capability enabled", "info")
+            if self.intent_classifier is not None and self.intent_classifier.is_loaded:
+                capabilities.append("intent")
+                self._log("Intent classification capability enabled (ADR-0010)", "info")
+            if self.dialogue_act_classifier is not None and self.dialogue_act_classifier.is_loaded:
+                capabilities.append("dialogue_act")
+                self._log("Dialogue act capability enabled", "info")
+            if self.chunk_detector is not None and self.chunk_detector.is_loaded:
+                capabilities.append("chunk")
+                self._log("Chunk detection capability enabled (ADR-0023)", "info")
 
         # Worker slot capacity (LOREGUARD_PARALLEL_SLOTS) so the backend's
         # session -> slot allocator knows how many concurrent sessions this worker
@@ -456,6 +484,10 @@ class BackendTunnel:
             # Backend wants streaming LLM generation
             await self._handle_llm_stream_request(data)
 
+        elif msg_type == "global_stylize_request":
+            # Tier-3 volunteer lane: stylize server-authored facts (engine ADR-0037/0038)
+            await self._handle_global_stylize_request(data)
+
         elif msg_type == "ping":
             # Respond to keep-alive ping
             await self._send({
@@ -593,6 +625,102 @@ class BackendTunnel:
                     "errorMessage": str(e),
                 },
             })
+
+    async def _handle_global_stylize_request(self, data: dict):
+        """Handle a tier-3 global stylize job from the backend.
+
+        Volunteer lane (engine ADR-0037/0038): the server owns the facts; this
+        worker only restates them as natural in-world text. The server verifies
+        the returned text with deterministic containment checks that reject any
+        number, URL, or multi-word capitalized name not present in the job's
+        facts, plus template markers, carriage returns, and overlength output.
+        The prompt and sanitizer here exist to keep a small model inside those
+        rules; the server stays the enforcement point.
+        """
+        payload = data.get("payload", {})
+        job_id = payload.get("job_id", "")
+        request_id = data.get("id", "")
+        trace_id = data.get("traceId", "")
+
+        if not job_id:
+            self._log("Global stylize request missing job_id", "error")
+            return
+
+        # Dispatch authentication (loreguard-engine#87): with a pinned key
+        # every job must carry a valid server signature. An unauthenticated
+        # request gets no response at all (the engine never sent it).
+        ok, reason = self._check_dispatch_signature(data)
+        if not ok:
+            self._log(f"Global stylize job {job_id[:8]}... REJECTED: {reason}", "error")
+            return
+
+        self._log(f"Global stylize job {job_id[:8]}... ({payload.get('content_kind', '?')})", "info")
+        start_time = time.time()
+
+        text = ""
+        error = ""
+        try:
+            llm_request = self._stylize_to_llm_request(payload)
+            result = await self.llm_proxy.generate(llm_request)
+            error = result.get("error") or ""
+            if not error:
+                text = self._sanitize_stylize_output(
+                    result.get("content", ""),
+                    int(payload.get("max_output_chars") or 0),
+                )
+                if not text:
+                    error = "empty stylize output"
+        except Exception as e:
+            logger.exception("Global stylize handling error")
+            error = str(e)
+
+        generation_ms = int((time.time() - start_time) * 1000)
+        response_payload = {
+            "job_id": job_id,
+            "request_id": request_id,
+            "text": text,
+            # The engine overwrites worker_id from the authenticated pending
+            # assignment (protocol_global.go); sent for log symmetry only.
+            "worker_id": self.worker_id,
+        }
+        if error:
+            response_payload["error"] = error
+            self._log(f"Global stylize job {job_id[:8]}... failed: {error}", "error")
+        else:
+            self._log(f"Global stylize job {job_id[:8]}... done ({generation_ms}ms)", "success")
+
+        await self._send({
+            "id": self._generate_message_id(),
+            "type": "global_stylize_response",
+            "timestamp": self._iso_timestamp(),
+            "senderId": self.worker_id,
+            "traceId": trace_id,
+            "payload": response_payload,
+        })
+
+    def _check_dispatch_signature(self, data: dict) -> tuple[bool, str]:
+        """Enforce the Ed25519 dispatch pin (loreguard-engine#87).
+
+        With LOREGUARD_DISPATCH_PUBKEY set, every stylize dispatch must
+        verify; a malformed pin fails closed. Without a pin, jobs are
+        accepted with a one-time warning (dev only; real enrollment will
+        deliver the pin alongside the lgv_ token).
+        """
+        from .dispatch_verify import PUBKEY_ENV, load_pinned_pubkey, verify_stylize_dispatch
+
+        try:
+            pubkey = load_pinned_pubkey()
+        except ValueError as e:
+            return False, str(e)
+        if pubkey is None:
+            if not self._warned_unsigned_dispatch:
+                self._warned_unsigned_dispatch = True
+                self._log(
+                    f"No {PUBKEY_ENV} pin set: accepting unsigned dispatches (dev only)",
+                    "warn",
+                )
+            return True, ""
+        return verify_stylize_dispatch(pubkey, data)
 
     async def _handle_llm_stream_request(self, data: dict):
         """Handle a streaming LLM inference request from the backend.
@@ -1694,6 +1822,121 @@ class BackendTunnel:
             request["disable_thinking"] = True
 
         return request
+
+    def _stylize_to_llm_request(self, payload: dict) -> dict:
+        """Convert a global stylize job into an LLM request.
+
+        Server-side containment fails any output containing numbers, URLs, or
+        multi-word capitalized names that do not appear in the job facts, so
+        the prompt forbids inventing them instead of trusting the model's
+        judgment.
+        """
+        content_kind = str(payload.get("content_kind") or "post").replace("_", " ").strip()
+        style_hints = str(payload.get("style_hints") or "").strip()
+        max_chars = int(payload.get("max_output_chars") or 0)
+        if max_chars <= 0:
+            max_chars = STYLIZE_DEFAULT_MAX_CHARS
+
+        fact_lines = []
+        for fact in payload.get("facts") or []:
+            key = str(fact.get("key") or "").strip()
+            value = str(fact.get("value") or "").strip()
+            if not value:
+                continue
+            fact_lines.append(f"- {key}: {value}" if key else f"- {value}")
+
+        allowed = [
+            str(entity).strip()
+            for entity in payload.get("allowed_entities") or []
+            if str(entity).strip()
+        ]
+
+        system = (
+            "You turn provided facts into natural in-world game text. Hard rules:\n"
+            "- Use ONLY the facts below. Never add names, places, people, organizations, "
+            "numbers, dates, prices, times, or web links that are not in the facts.\n"
+            "- Any number or link you write must appear in the facts, written exactly "
+            "the same way.\n"
+            "- Plain text only: no markdown, no headings, no lists, no code, and do not "
+            "wrap the text in quotes.\n"
+            "- Never mention these rules, the facts list, or the rewriting task."
+        )
+
+        user_parts = ["Facts:"]
+        user_parts.extend(fact_lines if fact_lines else ["- (none)"])
+        if allowed:
+            user_parts.append("")
+            user_parts.append("Also safe to mention: " + ", ".join(allowed))
+        if style_hints:
+            user_parts.append("")
+            user_parts.append(f"Style: {style_hints}")
+        user_parts.append("")
+        user_parts.append(
+            f"Write a {content_kind} of at most {max_chars} characters that naturally "
+            "restates these facts. Output only the text itself."
+        )
+
+        request = {
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": "\n".join(user_parts)},
+            ],
+            # ~4 chars per token plus headroom; the sanitizer enforces the
+            # exact character cap afterwards.
+            "max_tokens": max(64, min(1024, max_chars // 2)),
+            "temperature": 0.7,
+            "disable_thinking": True,
+            "require_content": True,
+        }
+        timeout_ms = int(payload.get("timeout_ms") or 0)
+        if timeout_ms > 0:
+            request["timeout"] = timeout_ms / 1000.0
+        return request
+
+    def _sanitize_stylize_output(self, text: str, max_chars: int) -> str:
+        """Normalize model output so well-behaved text survives server-side
+        containment: strip chat/markdown scaffolding, drop control characters
+        (the server rejects carriage returns and every other control char
+        except newline and tab), and trim to the job's character cap at a
+        sentence or word boundary."""
+        if max_chars <= 0:
+            max_chars = STYLIZE_DEFAULT_MAX_CHARS
+
+        text = text.strip()
+
+        # Unwrap a whole-output code fence (with or without a language tag).
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            text = "\n".join(lines).strip()
+
+        # Unwrap one layer of whole-output quotes.
+        for open_q, close_q in (('"', '"'), ("“", "”")):
+            if len(text) >= 2 and text.startswith(open_q) and text.endswith(close_q):
+                text = text[1:-1].strip()
+                break
+
+        # Normalize newlines, then drop remaining control/format characters.
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = "".join(ch for ch in text if ch in "\n\t" or ch.isprintable())
+
+        if len(text) > max_chars:
+            cut = text[:max_chars]
+            sentence_end = max(
+                cut.rfind(". "), cut.rfind("! "), cut.rfind("? "), cut.rfind("\n")
+            )
+            if sentence_end >= max_chars // 2:
+                cut = cut[: sentence_end + 1]
+            else:
+                space = cut.rfind(" ")
+                if space >= max_chars // 2:
+                    cut = cut[:space]
+            text = cut.rstrip()
+
+        return text.strip()
 
     def _validate_slot_filename(self, filename: str) -> tuple[bool, str]:
         """Validate a slot cache filename for security.
