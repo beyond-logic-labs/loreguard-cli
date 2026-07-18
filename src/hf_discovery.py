@@ -51,6 +51,8 @@ class GGUFFile:
     size_bytes: int
     url: str
     last_modified: Optional[str] = None  # ISO date string from HF API
+    sha256: Optional[str] = None         # LFS digest (loreguard-engine#90)
+    revision: Optional[str] = None       # Repo commit the url is pinned to
 
 
 def _parse_quant_type(filename: str) -> tuple[str, bool]:
@@ -180,8 +182,14 @@ def _generate_description(quant: str, is_ud: bool, size_gb: float) -> str:
 
 
 def fetch_hf_repo_files(repo_id: str) -> list[GGUFFile]:
-    """Fetch list of GGUF files from a HuggingFace repo."""
-    api_url = f"https://huggingface.co/api/models/{repo_id}"
+    """Fetch list of GGUF files from a HuggingFace repo.
+
+    blobs=true adds LFS metadata (sha256 digest) per file, and the repo's
+    commit sha pins the download URL to the exact revision the digest was
+    read from (loreguard-engine#90): a later repo push cannot silently swap
+    the bytes behind an already-discovered model.
+    """
+    api_url = f"https://huggingface.co/api/models/{repo_id}?blobs=true"
 
     try:
         req = Request(api_url, headers={"User-Agent": "loreguard-client/1.0"})
@@ -191,8 +199,9 @@ def fetch_hf_repo_files(repo_id: str) -> list[GGUFFile]:
         logger.warning("HF Discovery: Failed to fetch %s: %s", repo_id, e)
         return []
 
-    # Get repo-level last modified date
+    # Get repo-level last modified date and commit revision
     repo_last_modified = data.get("lastModified")
+    revision = data.get("sha") or "main"
 
     gguf_files = []
     siblings = data.get("siblings", [])
@@ -201,12 +210,16 @@ def fetch_hf_repo_files(repo_id: str) -> list[GGUFFile]:
         filename = file_info.get("rfilename", "")
         if filename.endswith(".gguf"):
             size = file_info.get("size", 0)
-            url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
+            lfs = file_info.get("lfs") or {}
+            sha256 = (lfs.get("oid") or "").removeprefix("sha256:").lower() or None
+            url = f"https://huggingface.co/{repo_id}/resolve/{revision}/{filename}"
             gguf_files.append(GGUFFile(
                 filename=filename,
                 size_bytes=size,
                 url=url,
                 last_modified=repo_last_modified,
+                sha256=sha256,
+                revision=revision,
             ))
 
     return gguf_files
@@ -291,6 +304,8 @@ def discover_models(org: str = HF_ORG, use_cache: bool = True) -> list[ModelInfo
                 hardware=_estimate_hardware(size_gb, quant),
                 recommended=(quant in ("Q6_K", "Q6K") and is_ud),  # Recommend UD Q6_K
                 days_ago=days_ago,
+                sha256=gguf_file.sha256,
+                revision=gguf_file.revision,
             )
             models.append(model)
 
@@ -350,6 +365,8 @@ def _save_cache(models: list[ModelInfo]) -> None:
                 "is_mlx": m.is_mlx,
                 "requires_apple_silicon": m.requires_apple_silicon,
                 "days_ago": m.days_ago,
+                "sha256": m.sha256,
+                "revision": m.revision,
             }
             for m in models
         ],
