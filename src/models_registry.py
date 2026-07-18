@@ -35,6 +35,8 @@ class ModelInfo:
     is_mlx: bool = False        # True for MLX format (Apple Silicon only)
     requires_apple_silicon: bool = False  # Only show on Apple Silicon
     days_ago: Optional[int] = None  # Days since last update (from HF API)
+    sha256: Optional[str] = None    # Expected file digest (loreguard-engine#90)
+    revision: Optional[str] = None  # Pinned repo commit the URL resolves against
 
 
 @dataclass

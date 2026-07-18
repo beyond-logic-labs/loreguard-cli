@@ -1152,10 +1152,21 @@ async def step_model_selection(hardware: Optional[HardwareInfo], app: Optional[T
         app.log(f"Downloading {model.name} ({model.size_gb:.1f}GB)...", "info")
         app.draw(Text(f"→ Downloading {model.name}...", style=Theme.INFO), title="Step 2/5: Model Selection")
 
+    import hashlib
+
     import httpx
+
+    from .model_integrity import expected_sha256_for_url, verify_digest
+
     model_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
+        # Integrity pin (loreguard-engine#90): discovery-provided digest, or
+        # resolved from the HF API for statically-registered models. The
+        # stream is hashed as it lands, so verification adds no extra I/O.
+        expected_sha = model.sha256 or await asyncio.to_thread(expected_sha256_for_url, model.url)
+        hasher = hashlib.sha256()
+
         async with httpx.AsyncClient(follow_redirects=True, timeout=None) as client:
             async with client.stream("GET", model.url) as response:
                 total = model.size_bytes or int(response.headers.get("content-length", 0))
@@ -1165,6 +1176,7 @@ async def step_model_selection(hardware: Optional[HardwareInfo], app: Optional[T
                 with open(model_path, "wb") as f:
                     async for chunk in response.aiter_bytes(1024 * 1024):
                         f.write(chunk)
+                        hasher.update(chunk)
                         downloaded += len(chunk)
                         pct = int(downloaded / total * 100) if total > 0 else 0
                         mb_done = downloaded // 1024 // 1024
@@ -1175,6 +1187,11 @@ async def step_model_selection(hardware: Optional[HardwareInfo], app: Optional[T
                             if pct >= last_log_pct + 10:
                                 last_log_pct = pct
                                 app.log(f"Download progress: {pct}% ({mb_done}MB / {mb_total}MB)", "info")
+
+        # Raises IntegrityError on mismatch (handled below: file deleted).
+        verify_digest(hasher.hexdigest(), expected_sha, model.filename)
+        if app and expected_sha:
+            app.log(f"sha256 verified: {model.filename}", "success")
 
         if app:
             app.log(f"Downloaded: {model.name}", "success")
