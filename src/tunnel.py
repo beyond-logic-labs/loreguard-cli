@@ -16,6 +16,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, TYPE_CHECKING
+from urllib.parse import urlsplit
 
 import websockets
 from rich.console import Console
@@ -71,6 +72,16 @@ class BackendTunnel:
         log_callback: Callable[[str, str], None] | None = None,
         max_retries: int = -1,  # -1 = infinite retries, 0 = no retries (single try)
     ):
+        # Volunteer mode refuses plaintext transport to non-loopback hosts
+        # (loreguard-engine#87): on ws:// a network MITM could inject or
+        # rewrite dispatches regardless of message signing.
+        if os.environ.get("LOREGUARD_VOLUNTEER") == "1" and backend_url.startswith("ws://"):
+            host = urlsplit(backend_url).hostname or ""
+            if host not in ("localhost", "127.0.0.1", "::1"):
+                raise ValueError(
+                    f"volunteer mode requires wss:// for non-loopback backends (got {backend_url})"
+                )
+
         self.backend_url = backend_url
         self.llm_proxy = llm_proxy
         self.worker_id = worker_id
@@ -111,6 +122,9 @@ class BackendTunnel:
         # Maps request_id -> cleanup task that removes queue after timeout
         self._follow_up_cleanup_tasks: dict[str, asyncio.Task] = {}
         self._follow_up_cleanup_delay = 20.0  # Keep queue alive for 20s after done
+
+        # One-time warning when volunteer mode runs without a dispatch pin
+        self._warned_unsigned_dispatch = False
 
     def _log(self, message: str, level: str = "info"):
         """Log a message through callback or fallback to console."""
@@ -632,6 +646,14 @@ class BackendTunnel:
             self._log("Global stylize request missing job_id", "error")
             return
 
+        # Dispatch authentication (loreguard-engine#87): with a pinned key
+        # every job must carry a valid server signature. An unauthenticated
+        # request gets no response at all (the engine never sent it).
+        ok, reason = self._check_dispatch_signature(data)
+        if not ok:
+            self._log(f"Global stylize job {job_id[:8]}... REJECTED: {reason}", "error")
+            return
+
         self._log(f"Global stylize job {job_id[:8]}... ({payload.get('content_kind', '?')})", "info")
         start_time = time.time()
 
@@ -675,6 +697,30 @@ class BackendTunnel:
             "traceId": trace_id,
             "payload": response_payload,
         })
+
+    def _check_dispatch_signature(self, data: dict) -> tuple[bool, str]:
+        """Enforce the Ed25519 dispatch pin (loreguard-engine#87).
+
+        With LOREGUARD_DISPATCH_PUBKEY set, every stylize dispatch must
+        verify; a malformed pin fails closed. Without a pin, jobs are
+        accepted with a one-time warning (dev only; real enrollment will
+        deliver the pin alongside the lgv_ token).
+        """
+        from .dispatch_verify import PUBKEY_ENV, load_pinned_pubkey, verify_stylize_dispatch
+
+        try:
+            pubkey = load_pinned_pubkey()
+        except ValueError as e:
+            return False, str(e)
+        if pubkey is None:
+            if not self._warned_unsigned_dispatch:
+                self._warned_unsigned_dispatch = True
+                self._log(
+                    f"No {PUBKEY_ENV} pin set: accepting unsigned dispatches (dev only)",
+                    "warn",
+                )
+            return True, ""
+        return verify_stylize_dispatch(pubkey, data)
 
     async def _handle_llm_stream_request(self, data: dict):
         """Handle a streaming LLM inference request from the backend.

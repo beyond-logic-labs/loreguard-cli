@@ -33,6 +33,7 @@ dependencies = [
     "fastapi>=0.109.0",
     "uvicorn>=0.27.0",
     "python-dotenv>=1.0.0",
+    "cryptography>=42.0.0",  # Ed25519 dispatch verification (loreguard-engine#87)
     "DialogTag",
     "tf-keras>=2.16.0",  # Required for DeBERTa intent classifier (Keras 3 compatibility)
 ]
