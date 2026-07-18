@@ -77,10 +77,19 @@ class LoreguardCLI:
         """Run the client. Returns exit code."""
         self._start_time = datetime.now()
 
-        # Setup signal handlers
+        # Setup signal handlers. loop.add_signal_handler is POSIX-only and raises
+        # NotImplementedError on Windows, so fall back to signal.signal there.
         loop = asyncio.get_event_loop()
+
+        def _request_shutdown():
+            asyncio.create_task(self._shutdown())
+
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, lambda: asyncio.create_task(self._shutdown()))
+            try:
+                loop.add_signal_handler(sig, _request_shutdown)
+            except NotImplementedError:
+                # Windows: signal handlers run in the main thread; hop back onto the loop.
+                signal.signal(sig, lambda *_: loop.call_soon_threadsafe(_request_shutdown))
 
         log.info("=" * 50)
         log.info("Loreguard CLI - Starting")
