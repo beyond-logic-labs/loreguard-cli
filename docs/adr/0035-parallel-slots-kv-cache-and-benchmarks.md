@@ -214,3 +214,36 @@ quality/grounding edge. The one remaining piece for a multi-session worker is th
 **session→slot LRU dispatcher** (assign live sessions to the N slots, `id_slot` per
 request, and `/slots` save/restore to park idle sessions on disk) — that lives in
 the calling client / dispatcher, not in this CLI.
+
+## 2026-07-19 follow-up — retrieval path, offload, and the real concurrency ceiling
+
+Live end-to-end validation on the actual rig surfaced things Table 5 missed, because
+**Table 5 only measured the no-retrieval path (Pass 2 + 4 + 4.5)**. Retrieval-intent
+turns also run Pass 1 (retrieve), 2.1 (relevance) and 2.5 (verify).
+
+- **The 38s "runaway" was a bug, now fixed (engine `7adc0e6`).** Pass 2.1's relevance
+  schema (`{"relevant":[...]}`) had **no `maxItems`**, so llama.cpp's grammar allowed an
+  unbounded array. gemma-4 (unlike Qwen) fills valid array elements until the token cap:
+  ~1000 tokens / ~38s for a list that should be a few IDs. Bounded all four JSON-pass
+  arrays (2.1/2.5/4.5/5) with `maxItems` (as `filler_generator` already did). After the
+  fix: retrieval turn = **24s single-user**, 3 concurrent = ~30-36s all verified.
+
+- **Windows-worker prerequisites (client `main`):** `add_signal_handler` POSIX crash,
+  `.dll` not copied on extraction, **fp16 intent models emulated ~6x slower on CPU
+  (force fp32)**, and pinned **`b9761 cuda-12.4` has no Blackwell sm_120 kernels →
+  silent CPU fallback (~3.6 tk/s)**; use a cuda-12.8+ build via `LOREGUARD_LLAMA_SERVER_PATH`.
+
+- **Context size is a *weak* VRAM lever on SWA models.** Halving `LOREGUARD_CONTEXT_SIZE`
+  16k→8k barely moved VRAM (15.7→15.4 GB): SWA window-bounds KV on 5 of every 6 layers.
+  The VRAM hog is the ~11.5 GB of weights, not KV.
+
+- **`LOREGUARD_CPU_MOE=1` (expert offload) frees VRAM but trades per-stream speed.**
+  Experts→CPU: 14.9→5 GB resident, ~10 GB free. `batched-bench` aggregate scales (26→55
+  tk/s, batch 1→10) — but per-stream drops to ~5.5 tk/s at batch-10, and a grounded turn
+  is **5-6 sequential gemma passes**, so under 10-way load each chat takes minutes →
+  timeout. Offload wins *aggregate throughput*, not *per-chat latency under concurrency*.
+
+- **Real ceiling on 16 GB + 26B + the 5-6-pass pipeline: ~3-5 concurrent grounded turns
+  at ~30-50s each.** 10 truly-simultaneous is not reachable here (all-GPU is VRAM-bound to
+  ~1-2; offload's per-stream × multi-pass is too slow). Paths past it: a **smaller/faster
+  model** (gemma-4-12B — needs a quality bake-off vs 26B first) or **more workers** (tiers).
