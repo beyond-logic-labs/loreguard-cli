@@ -347,6 +347,11 @@ async def download_llama_server(
             copy_lib_file(lib_file, bin_dir)
         for lib_file in binary_path.parent.glob("*.so*"):
             copy_lib_file(lib_file, bin_dir)
+        # Windows: llama-server.exe is a thin launcher (~10KB) and cannot load
+        # without its sibling DLLs (ggml*.dll, ggml-cuda.dll, llama.dll, mtmd.dll).
+        # Without these it exits instantly with STATUS_DLL_NOT_FOUND and no output.
+        for lib_file in binary_path.parent.glob("*.dll"):
+            shutil.copy2(lib_file, bin_dir / lib_file.name)
 
         # Make executable
         make_executable(dest_path)
