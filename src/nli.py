@@ -133,6 +133,7 @@ class NLIService:
                     trust_remote_code=True,
                     **dtype_kwargs,
                 )
+                self._retie_hhem_embeddings()
                 self._model.to(self._device)
                 self._model.eval()
 
@@ -140,6 +141,7 @@ class NLIService:
                     raise RuntimeError("HHEM model missing predict() helper")
 
                 self._label_order = ["entailment", "neutral"]
+                self._assert_hhem_discriminates()
                 logger.info("HHEM model loaded successfully")
                 return True
 
@@ -467,6 +469,58 @@ class NLIService:
                     logger.info("Patched foundation to self-resolving relative path")
             except Exception as e:
                 logger.warning(f"Could not patch configuration_hhem_v2.py: {e}")
+
+    def _retie_hhem_embeddings(self) -> None:
+        """Re-tie the HHEM T5 encoder embeddings to the shared table.
+
+        The vendored HHEM checkpoint stores only the shared T5 embedding
+        (``t5.transformer.shared.weight``); the encoder's ``embed_tokens``
+        table is weight-tied to it at load. ``_patch_hhem_model_files`` sets
+        ``_tied_weights_keys = []`` for transformers-5.x __init__ compat, which
+        DISABLES that tie under transformers 5.x, leaving ``embed_tokens``
+        randomly initialized so HHEM returns a constant score (~0.502) for
+        every input. Under the pinned transformers 4.x the tie already holds
+        structurally, so this is a no-op there; it future-proofs the 5.x
+        upgrade. Idempotent (``data_ptr`` guard); defensive on structure.
+        """
+        try:
+            t5 = self._model.t5.transformer
+            shared = t5.shared.weight
+        except AttributeError as exc:
+            logger.warning(f"HHEM re-tie skipped: unexpected model structure ({exc})")
+            return
+        retied = []
+        for name in ("encoder", "decoder"):
+            module = getattr(t5, name, None)
+            embed = getattr(module, "embed_tokens", None) if module is not None else None
+            if embed is not None and embed.weight.data_ptr() != shared.data_ptr():
+                embed.weight = shared
+                retied.append(name)
+        if retied:
+            logger.info(f"HHEM embeddings re-tied to shared table: {', '.join(retied)}")
+
+    def _assert_hhem_discriminates(self) -> None:
+        """Fail loudly at load if HHEM emits a constant score.
+
+        A broken embedding tie makes HHEM return an identical score for every
+        input, silently turning grounding into "reject everything". One
+        grounded/absurd probe pair catches that deterministically before the
+        model serves any request.
+        """
+        try:
+            evidence = "The board stays technical and posts no card numbers."
+            grounded = float(self._predict_hhem([(evidence, "The board keeps discussion technical.")])[0])
+            absurd = float(self._predict_hhem([(evidence, "A volcano erupted in Tokyo killing hundreds.")])[0])
+        except Exception as exc:
+            logger.warning(f"HHEM load canary skipped (probe failed: {exc})")
+            return
+        if grounded - absurd < 0.2:
+            raise RuntimeError(
+                f"HHEM load canary FAILED: model is not discriminating "
+                f"(grounded={grounded:.4f}, absurd={absurd:.4f}). The embedding "
+                f"tie is likely broken -- grounding would reject all output."
+            )
+        logger.info(f"HHEM load canary passed (grounded={grounded:.3f} vs absurd={absurd:.3f})")
 
     def _predict_hhem(self, pairs: List[Tuple[str, str]]) -> List[float]:
         """Run HHEM prediction and normalize output to list of floats."""
