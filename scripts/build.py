@@ -40,6 +40,12 @@ def main():
         "--add-data", "templates:templates",
         # Collect all src submodules
         "--collect-submodules", "src",
+        # Collect ALL of torch (binaries + data), not just what the PyInstaller
+        # hook grabs. The hook strips torch's optimized CPU kernels (fbgemm.dll,
+        # the oneDNN-backed libtorch_cpu), leaving a slow reference-BLAS fallback:
+        # DeBERTa intent went from ~0.5s to ~6-9s on CPU. --collect-all restores
+        # the full native math libs.
+        "--collect-all", "torch",
         # Add hidden imports that PyInstaller might miss
         "--hidden-import", "src",
         "--hidden-import", "src.config",
