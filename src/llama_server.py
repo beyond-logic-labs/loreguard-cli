@@ -388,6 +388,15 @@ class LlamaServerProcess:
         self.port = port
         self.lora_path = lora_path
         self.context_size = context_size
+        # Per-slot context window is a VRAM/concurrency knob: total KV scales as
+        # context_size * parallel_slots. Lowering it (e.g. 8192) frees VRAM
+        # headroom so more slots can run concurrent generations on a small GPU.
+        _env_ctx = os.getenv("LOREGUARD_CONTEXT_SIZE")
+        if _env_ctx:
+            try:
+                self.context_size = int(_env_ctx)
+            except ValueError:
+                pass
         self.model_family = model_family
         # Number of concurrent llama-server slots (sessions).
         # Default 1 preserves the ADR-0014 single-slot / slot-0 pinning behavior
