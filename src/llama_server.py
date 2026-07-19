@@ -462,6 +462,18 @@ class LlamaServerProcess:
         if self.kv_cache_type and self.kv_cache_type != "f16":
             cmd.extend(["-fa", "on", "-ctk", self.kv_cache_type, "-ctv", self.kv_cache_type])
 
+        # Optional MoE expert offload to CPU RAM (concurrency/batch mode). Keeps
+        # attention on GPU, moves expert FFN weights to system RAM. On a MoE model
+        # this frees a lot of VRAM (gemma-4-26B-A4B: ~15GB -> ~5GB), so many more
+        # concurrent slots fit; per-stream speed drops but batching amortizes it
+        # (measured: ~27 tk/s at 1 stream, ~55 tk/s aggregate at 10). Set
+        # LOREGUARD_CPU_MOE=1 to offload all experts, or =N to offload N layers.
+        _cpu_moe = os.getenv("LOREGUARD_CPU_MOE", "").strip().lower()
+        if _cpu_moe in ("1", "all", "true", "yes"):
+            cmd.extend(["-ot", r"\.ffn_.*_exps\.weight=CPU"])
+        elif _cpu_moe.isdigit():
+            cmd.extend(["--n-cpu-moe", _cpu_moe])
+
         # Apply model-family-specific chat template override.
         # Llama 3.1 requires a custom template to avoid the tool-calling bug;
         # other families use their GGUF-embedded template (--jinja alone).
