@@ -141,10 +141,18 @@ class IntentClassifier:
 
                 # Use zero-shot-classification pipeline
                 device_idx = 0 if self._device == "cuda" else -1 if self._device == "cpu" else 0
+                # The model config declares torch_dtype=float16, and modern
+                # transformers honors it on load. fp16 is emulated (~6x slower)
+                # on CPU, so force fp32 there; fp16 stays fine on GPU.
+                pipe_kwargs = {}
+                if self._device == "cpu":
+                    import torch
+                    pipe_kwargs["torch_dtype"] = torch.float32
                 self._classifier = pipeline(
                     "zero-shot-classification",
                     model=self._model_path,
                     device=device_idx if self._device != "mps" else "mps",
+                    **pipe_kwargs,
                 )
 
                 logger.info("Intent classifier loaded successfully")

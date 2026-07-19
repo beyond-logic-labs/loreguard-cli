@@ -114,10 +114,17 @@ class ChunkDetector:
                 logger.info(f"Loading chunk detector: {self._model_path} (device={self._device})")
 
                 device_idx = 0 if self._device == "cuda" else -1 if self._device == "cpu" else 0
+                # Force fp32 on CPU (config declares fp16, which is ~6x slower
+                # emulated on CPU). Only used when not sharing the intent model.
+                pipe_kwargs = {}
+                if self._device == "cpu":
+                    import torch
+                    pipe_kwargs["torch_dtype"] = torch.float32
                 self._classifier = pipeline(
                     "zero-shot-classification",
                     model=self._model_path,
                     device=device_idx if self._device != "mps" else "mps",
+                    **pipe_kwargs,
                 )
 
                 logger.info("Chunk detector loaded successfully")

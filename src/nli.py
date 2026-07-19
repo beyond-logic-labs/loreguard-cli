@@ -118,6 +118,11 @@ class NLIService:
             self._device = self._resolve_device()
             logger.info(f"Loading NLI model: {self._model_path} (device={self._device})")
 
+            # Model configs often declare torch_dtype=float16, which modern
+            # transformers honors on load. fp16 is emulated (~6x slower) on CPU,
+            # so force fp32 there; fp16 stays fine on GPU.
+            dtype_kwargs = {"torch_dtype": torch.float32} if self._device == "cpu" else {}
+
             if self._use_hhem:
                 # HHEMv2 custom class (built for transformers 4.39) lacks
                 # all_tied_weights_keys required by transformers 5.x.
@@ -126,6 +131,7 @@ class NLIService:
                 self._model = AutoModelForSequenceClassification.from_pretrained(
                     self._model_path,
                     trust_remote_code=True,
+                    **dtype_kwargs,
                 )
                 self._model.to(self._device)
                 self._model.eval()
@@ -138,7 +144,9 @@ class NLIService:
                 return True
 
             self._tokenizer = AutoTokenizer.from_pretrained(self._model_path)
-            self._model = AutoModelForSequenceClassification.from_pretrained(self._model_path)
+            self._model = AutoModelForSequenceClassification.from_pretrained(
+                self._model_path, **dtype_kwargs
+            )
             self._model.to(self._device)
             self._model.eval()
 
